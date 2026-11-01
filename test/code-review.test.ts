@@ -2,82 +2,154 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Sim, HOUR, DAY } from '../src/runtime/sim.js';
 import { reconcileToEnd } from '../src/core/reconcile.js';
-import { codeReviewSpec, BOT } from '../src/scenarios/code-review.js';
-import { FakeCodeReview } from '../src/fakes/review-world.js';
+import { AGENT, blockersIn, codeReviewLoop, findingsIn, pickReviewer, type ChangeView } from '../src/scenarios/code-review.js';
+import { ReviewSystem, TYPICAL, type ReviewSystemConfig } from '../src/fakes/review-system.js';
 import type { TickRecord } from '../src/core/types.js';
 
-const WF = 'code-review:cl/100';
+const WF = 'code-review:change/100';
 
-function setup(startAt = 0) {
+function run(cfg: ReviewSystemConfig, o: { startAt?: number } = {}) {
   const sim = new Sim();
-  const cr = new FakeCodeReview(sim, WF);
+  const rs = new ReviewSystem(sim, WF, cfg);
   const trace: TickRecord[] = [];
-  let checkpoints = 0;
   sim.register('code-review', (rt) =>
-    reconcileToEnd(rt, codeReviewSpec(rt.activities(cr.activities()), { clId: 'cl/100' }), {
-      maxTicksPerRun: 3, onTick: (r) => trace.push(r), onCheckpoint: () => checkpoints++,
-    }));
-
-  // Reviewer script over ~2 days.
-  sim.at(1 * HOUR, () => {
-    cr.comment('alice', 'nit: rename tmp to buffer');
-    cr.comment('alice', 'bug: missing null check on user');
-    cr.comment('alice', 'q: why not reuse the existing cache?');
-  });
-  sim.at(8 * HOUR, () => {
-    cr.comment('alice', 'q: and what about eviction under memory pressure?', 't3'); // follow-up → new finding version
-  });
-  sim.at(9 * HOUR, () => { // arrives while the t3 draft awaits the owner
-    cr.comment('alice', 'design: should this live in its own service?');
-    cr.comment('alice', 'praise: nice test coverage');
-  });
-  sim.at(30 * HOUR, () => cr.reviewerPass('alice'));
-  sim.at(54 * HOUR, () => cr.reviewerPass('alice'));
-  sim.at(startAt, () => sim.start(WF, 'code-review', {}));
-  return { sim, cr, trace, checkpoints: () => checkpoints };
+    reconcileToEnd(rt, codeReviewLoop(rt.activities(rs.activities()), { change: 'change/100' }), { maxTicksPerRun: 20, onTick: (r) => trace.push(r) }));
+  sim.at(o.startAt ?? 0, () => sim.start(WF, 'code-review', {}));
+  const acted = () => trace.flatMap((r) => r.acted);
+  return { sim, rs, trace, acted, done: async () => { await sim.run({ maxMs: 60 * DAY }); return sim.result<any>(WF); } };
 }
 
-test('classify → policy → act over days; drafts and escalations are finding-scoped blockers', async () => {
-  const { sim, cr, trace, checkpoints } = setup();
-  await sim.run();
-  const out = sim.result<any>(WF);
-  assert.equal(out.status, 'done');
-  assert.match(out.reason, /^submitted/);
+// ───────────────────────────── what the loop sees (pure) ─────────────────────────────
 
-  // Six distinct findings (incl. the follow-up on t3) ⇒ six classifications, despite many ticks & checkpoints.
-  assert.equal(cr.calls.classify, 6);
-  assert.ok(checkpoints() >= 3);
-
-  // nit+bug batched into ONE code revision.
-  assert.equal(cr.calls.addressInCode, 1);
-  const t1 = cr.cl.threads[0]!, t2 = cr.cl.threads[1]!;
-  assert.equal(t1.messages.at(-1)!.body, t2.messages.at(-1)!.body);
-
-  // Question thread: two draft replies, each published by the owner.
-  const t3 = cr.cl.threads[2]!;
-  assert.equal(t3.messages.filter((m) => m.author === BOT).length, 2);
-  assert.ok(t3.messages.every((m) => !m.draft));
-
-  // While a draft awaited the owner, that finding was blocked — but other work proceeded.
-  const draftFrames = trace.filter((r) => r.blockers.includes('draft:t3'));
-  assert.ok(draftFrames.length > 0);
-  assert.ok(draftFrames.some((r) => r.acted.length > 0), 'finding-scoped blocker did not stall other findings');
-
-  // Design comment escalated to the owner, who answered; praise auto-replied.
-  assert.ok(cr.cl.threads[3]!.labels.includes('needs-owner'));
-  assert.equal(cr.cl.threads[3]!.messages.at(-1)!.author, cr.cl.owner);
-  assert.equal(cr.cl.threads[4]!.messages.at(-1)!.author, BOT);
-
-  // Submitted promptly after approval, woken by the webhook hint rather than the 2h poll.
-  const submitTick = trace.find((r) => r.acted.some((k) => k.startsWith('submit:')))!;
-  assert.equal(submitTick.at, 30 * HOUR, `submitted at ${submitTick.at / HOUR}h`);
-  assert.equal(submitTick.woke, 'signal:cl-updated');
+const view = (over: Partial<ChangeView> = {}): ChangeView => ({
+  id: 'change/1', owner: 'olivia', status: 'open', patchset: 2, reviewers: [], attention: [], away: [],
+  requirements: [], threads: [], checks: [], mergeable: { ok: true }, ...over,
 });
 
-test('started late (day 1.5, all comments already there): same result — the loop is level-triggered', async () => {
-  const { sim, cr } = setup(1.5 * DAY);
-  await sim.run();
-  assert.equal(sim.result<any>(WF).status, 'done');
-  assert.equal(cr.calls.classify, 5, 'the t3 follow-up was already the latest message, so one fewer version');
-  assert.ok(cr.cl.submitted);
+test('findings: every unmet requirement is a finding; a running check is a finding the run blocks', () => {
+  const c = view({
+    requirements: [{ id: 'owners:web/', summary: 'an owner of web/', satisfied: false, eligible: ['carol'] }, { id: 'review', summary: '', satisfied: true, eligible: [] }],
+    checks: [{ name: 'build', required: true, state: 'running', patchset: 2, startedAt: 0, runs: 1, likelyFlaky: false }],
+    threads: [
+      { id: 't1', origin: 'person', resolved: false, messages: [{ id: 'm1', author: 'alice', body: 'nit: x', at: 0 }] },
+      { id: 't2', origin: 'person', resolved: false, messages: [{ id: 'm2', author: 'alice', body: 'q', at: 0 }, { id: 'm3', author: AGENT, body: 'because', at: 1 }] },
+    ],
+    mergeable: { ok: false, targetHead: 'h1', autoRebase: true },
+  });
+  assert.deepEqual(findingsIn(c).map((f) => f.id), ['thread:t1@m1', 'owners:web/', 'check:build', 'conflict']);
+  assert.deepEqual(blockersIn(c).map((b) => [b.id, b.on]), [['running:build', ['check:build']]]);
+});
+
+test('blockers: a present reviewer who can grant a requirement covers it, aging only while it is their turn', () => {
+  const owners = { id: 'owners:web/', summary: '', satisfied: false, eligible: ['bob', 'carol'] };
+  let c = view({ requirements: [owners], reviewers: [{ user: 'carol', kind: 'person', addedAt: 0, turnSince: 5 }] });
+  assert.deepEqual(blockersIn(c).map((b) => [b.id, b.on, b.since]), [['reviewer:carol:owners:web/', ['owners:web/'], 5]]);
+  // Away: doesn't count, so the requirement is open again, and the next pick skips the absent owner.
+  c = view({ requirements: [owners], reviewers: [{ user: 'carol', kind: 'person', addedAt: 0, away: true }], away: ['bob', 'carol'] });
+  assert.deepEqual(blockersIn(c), []);
+  assert.equal(pickReviewer(owners, c), undefined);
+  assert.equal(pickReviewer(owners, view({ away: ['bob'] })), 'carol');
+});
+
+// ───────────────────────────── a whole review ─────────────────────────────
+
+test('a typical review: judged once per message, fixes batched, the right reviewers added, submitted when every requirement is met', async () => {
+  const { rs, acted, done } = run(TYPICAL);
+  const out = await done();
+  assert.equal(out.status, 'done');
+  assert.match(out.reason, /^submitted at patchset \d+$/);
+  assert.equal(rs.status, 'submitted');
+
+  // Seven messages needed a response (four from alice, then praise, carol's suggestion, an analyzer finding): seven judgments.
+  assert.equal(rs.calls.judge, 7);
+  // The analyzer finding didn't apply here: dismissed as not useful, not "fixed".
+  assert.ok(rs.threads[0]!.resolved && rs.threads[0]!.messages.at(-1)!.body.startsWith('Not useful'));
+  // owners:web/ had nobody on the change: bob is away, so carol was added.
+  assert.ok(acted().includes('add-reviewer:owners:web/:carol'));
+  assert.ok(!acted().some((k) => k.includes(':bob')));
+  // Alice's nit and bug arrived together and went into one revision.
+  const revisions = acted().filter((k) => k.startsWith('revise:'));
+  assert.equal(revisions.length, 1);
+  assert.equal(revisions[0]!.match(/thread:/g)!.length, 2, revisions[0]);
+  // The flaky check was rerun once on its patchset, not "fixed".
+  assert.ok(acted().some((k) => k.startsWith('rerun:check:unit-tests@ps')));
+  // The design question went to the owner; carol's suggestion became a draft the owner published.
+  assert.ok(acted().some((k) => k.startsWith('escalate:thread:')));
+  assert.ok(rs.threads.some((t) => t.messages.some((m) => m.author === 'olivia' && m.body.startsWith('Decision'))));
+  assert.ok(rs.events.some((e) => e.who === 'olivia' && e.what.startsWith('published the agent')));
+  // The target branch moved; a clean rebase followed.
+  assert.ok(acted().some((k) => k.startsWith('rebase:conflict:')));
+  // Submitted with every requirement met.
+  assert.ok(rs.requirements().every((r) => r.satisfied));
+});
+
+test('started late, with every comment already there: the same result, because the loop is level-triggered', async () => {
+  const early = run(TYPICAL);
+  await early.done();
+  const late = run(TYPICAL, { startAt: 30 * HOUR });
+  const out = await late.done();
+  assert.equal(out.status, 'done');
+  assert.equal(late.rs.calls.judge, early.rs.calls.judge);
+  assert.ok(late.rs.requirements().every((r) => r.satisfied));
+});
+
+test('a lost draft is retried under a new key, then the thread goes to the owner', async () => {
+  const { acted, done } = run({
+    files: [{ path: 'search/a.go', language: 'go' }], loseDrafts: true,
+    people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice', passes: [[{ body: 'alt: use a channel here' }]] }],
+    reviewers: ['alice'],
+  });
+  await done();
+  const t = acted().filter((k) => k.includes('thread:t1'));
+  assert.deepEqual(t.slice(0, 4), [1, 2, 3].map((n) => `reply:thread:t1@m1:${n}`).concat('escalate:thread:t1@m1:4'));
+});
+
+test('a reviewer who never takes their turn: the requirement ages out, the owner is tagged, and swaps them', async () => {
+  const cfg: ReviewSystemConfig = {
+    ...TYPICAL,
+    people: [...TYPICAL.people.filter((p) => p.user !== 'bob'), { user: 'dave', owns: ['web/'], languages: ['typescript'], unresponsive: true }],
+    reviewers: ['alice', 'dave'],
+  };
+  const { rs, trace, acted, done } = run(cfg);
+  const out = await done();
+  assert.equal(out.status, 'done');
+  // Blocked by dave for two days, then escalated: the owner removed dave and added carol.
+  const esc = trace.find((r) => r.acted.some((k) => k.startsWith('escalate:owners:web/')))!;
+  assert.ok(esc && esc.at >= 2 * DAY, `escalated at ${esc?.at}`);
+  assert.ok(rs.events.some((e) => e.who === 'olivia' && e.what === 'removed dave'));
+  assert.ok([...rs.reviewers.keys()].includes('carol'));
+  assert.ok(!acted().some((k) => k.startsWith('add-reviewer:owners:web/')), 'dave counted as coverage, so the loop waited instead of adding someone');
+});
+
+test('votes that reset on a new patchset: the reviewer approves again before the change is submitted', async () => {
+  const cfg: ReviewSystemConfig = {
+    files: [{ path: 'search/a.go', language: 'go' }], votes: 'reset',
+    people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice', turnaround: 4 * HOUR, passes: [[{ body: 'nit: rename x' }]] }],
+    reviewers: ['alice'],
+    // A slow build: alice approves before it finishes, then the target branch moves with a conflict.
+    checks: [{ name: 'build', durationMs: 6 * HOUR }],
+    headMoves: [{ at: 10 * HOUR, conflicts: true }],
+  };
+  const { rs, acted, done } = run(cfg);
+  const out = await done();
+  assert.equal(out.status, 'done');
+  // The conflict at head needed a code change, which reset alice's approval; she approved the new patchset.
+  assert.ok(acted().some((k) => k.startsWith('revise:conflict')));
+  const approvals = rs.events.filter((e) => e.who === 'alice' && e.what.startsWith('approved'));
+  assert.ok(approvals.length >= 2, approvals.map((e) => e.what).join('; '));
+  assert.equal(rs.votes.get('alice'), rs.patchset, 'submitted on an approval of the final patchset');
+});
+
+test('a check that keeps failing for real is escalated after three fixes, and the owner fixes it', async () => {
+  const { rs, acted, done } = run({
+    files: [{ path: 'search/a.go', language: 'go' }],
+    people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice' }],
+    reviewers: ['alice'],
+    checks: [{ name: 'integration', fixesNeeded: 99 }],
+  });
+  const out = await done();
+  assert.equal(out.status, 'done');
+  assert.deepEqual(acted().filter((k) => k.includes('check:integration')).slice(0, 4),
+    ['revise:check:integration:1', 'revise:check:integration:2', 'revise:check:integration:3', 'escalate:check:integration:4']);
+  assert.ok(rs.threads.some((t) => t.messages.some((m) => m.author === 'olivia' && m.body === 'Fixed integration myself.')));
 });

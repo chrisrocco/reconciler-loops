@@ -2,8 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Sim, HOUR, DAY, MIN } from '../src/runtime/sim.js';
 import { buildFrame, escalation, forget, migrate, newMemory, reconcile, reconcileToEnd, type LoopMemoryV1 } from '../src/core/reconcile.js';
-import { codeReviewSpec } from '../src/scenarios/code-review.js';
-import { FakeCodeReview } from '../src/fakes/review-world.js';
 import type { Action, Blocker, Budget, Finding, IntentRecord, ReconcilerSpec, TickRecord } from '../src/core/types.js';
 
 const finding: Finding = { id: 'f', kind: 'k', severity: 'blocking', summary: '', data: {} };
@@ -47,25 +45,6 @@ test('a plan that acts every tick against an unchanging world polls instead of s
   assert.ok(trace.length < 11 + 2 * 24 + 2, `${trace.length} ticks`);
 });
 
-test('code review: a lost draft is retried under a new key, then escalated to the owner', async () => {
-  const sim = new Sim();
-  const WF = 'code-review:cl/100';
-  const cr = new FakeCodeReview(sim, WF);
-  cr.loseDrafts = true;
-  const keys: string[] = [];
-  sim.register('code-review', (rt) =>
-    reconcileToEnd(rt, codeReviewSpec(rt.activities(cr.activities()), { clId: 'cl/100' }), {
-      onTick: (r) => keys.push(...r.acted),
-    }));
-  sim.at(HOUR, () => cr.comment('alice', 'q: why not reuse the existing cache?'));
-  sim.at(0, () => sim.start(WF, 'code-review', {}));
-  await sim.run();
-  assert.deepEqual(keys.slice(0, 4), [...[1, 2, 3].map((n) => `reply:thread:t1@m1:${n}`), 'escalate:thread:t1@m1:4']);
-  assert.equal(cr.calls.postReply, 3);
-  assert.equal(cr.calls.escalateToOwner, 1);
-  // The owner answered; nothing is left for the agent, and the loop waits for approval until out of time.
-  assert.equal(sim.result<any>(WF).status, 'out-of-time');
-});
 
 // ───────────────────────────── escalation, aging, retention (frame level) ─────────────────────────────
 
