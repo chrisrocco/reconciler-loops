@@ -313,7 +313,7 @@ src/scenarios/   review-loop.ts · code-review.ts · experiment.ts · investigat
 src/fakes/       prod-world.ts (idealized, for unit tests; ramp policies) · review-world.ts · review-system.ts (code review) · catalog.ts
                  migration-world.ts (codebase, SAMPLE_APP) · on-call-world.ts (seeded org)
                  realistic/ world.ts · metrics.ts · bug-tracker.ts · release.ts · calendar.ts · rng.ts · harness.ts
-examples/        experiment-timeline.ts · realistic-report.ts · temporal-workflows.ts (real proxyActivities/continueAsNew wiring)
+examples/        cert-renewal.ts (a complete small loop, start here) · experiment-timeline.ts · realistic-report.ts · temporal-workflows.ts (real proxyActivities/continueAsNew wiring)
 docs/            reconciler-loops.md (the developer guide)
 site/            Vite + React site: content/ (lessons, quizzes) · widgets/ · sims/ (one per loop) · components/ (players)
 ```

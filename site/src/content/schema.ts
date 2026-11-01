@@ -35,7 +35,10 @@ export type Block =
   | { p: string }
   | { h: string }
   | { list: string[]; ordered?: boolean }
-  | { code: string; lang?: 'ts' | 'text' }
+  /** `from` marks a sketch: simplified from that real code (`path#region`), which it links to. */
+  | { code: string; lang?: 'ts' | 'text'; from?: string }
+  /** Real code from the repository: `path#region` (see content/excerpt.ts). */
+  | { source: string; caption?: string }
   | { table: { head: string[]; rows: string[][] } }
   | { callout: string; tone?: 'note' | 'warn' | 'example' };
 

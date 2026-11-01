@@ -28,6 +28,7 @@ export function newMemory(now: number): LoopMemory {
   return { version: 2, startedAt: now, tick: 0, intents: [], forgotten: {}, memo: {}, facts: {} };
 }
 
+// #region tick
 /**
  * Drive the world toward `spec.done` by repeated observe → done? → plan → act → wait.
  * Findings the loop can't resolve are escalated one at a time, and the loop carries on.
@@ -109,10 +110,13 @@ export async function reconcile<W, F extends Finding, A extends Action, J = neve
       woke = r.reason === 'signal' ? `signal:${r.name}` : 'timeout';
     }
 
+    // #region checkpoint
     // 9. CHECKPOINT — bound history; everything needed to resume is in `mem`.
     if ((opts.maxTicksPerRun && runTicks >= opts.maxTicksPerRun) || rt.historyLarge?.()) return { status: 'checkpoint', memory: mem };
+    // #endregion
   }
 }
+// #endregion
 
 // ───────────────────────────── frame construction ─────────────────────────────
 
@@ -123,6 +127,7 @@ export async function reconcile<W, F extends Finding, A extends Action, J = neve
 export function buildFrame<W, F extends Finding, J = never>(
   obs: Observation<W, F>, mem: LoopMemory, now: number, budget: Budget = {},
 ): Frame<W, F, J> {
+  // #region sort
   const covered = new Set(obs.blockers.flatMap((b) => b.on));
   for (const it of mem.intents) if (!it.settled) settleIntent(it, covered, now);
 
@@ -135,6 +140,7 @@ export function buildFrame<W, F extends Finding, J = never>(
     else if (claimedIds.has(f.id)) claimed.push(f);
     else unhandled.push(f);
   }
+  // #endregion
 
   const attempts: Record<FindingId, number> = {};
   for (const [id, f] of Object.entries(mem.forgotten)) attempts[id] = f.count;
@@ -210,6 +216,7 @@ function outOfTime(mem: LoopMemory, now: number, b: Budget) {
 
 // ───────────────────────────── ledger ─────────────────────────────
 
+// #region run-actions
 /** Perform each action whose key the ledger hasn't seen, and record it. */
 async function runActions<A extends Action>(actions: A[], mem: LoopMemory, rt: Runtime, perform: (a: A) => Promise<void>) {
   const spent = new Set(mem.intents.map((i) => i.key));
@@ -227,6 +234,7 @@ async function runActions<A extends Action>(actions: A[], mem: LoopMemory, rt: R
   }
   return { acted, skipped };
 }
+// #endregion
 
 /** Open blocking findings whose every proposed action was already in the ledger. */
 function stalledFindings<F extends Finding>(actions: Action[], skipped: string[], frame: Frame<unknown, F, any>): F[] {

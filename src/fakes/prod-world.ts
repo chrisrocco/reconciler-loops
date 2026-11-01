@@ -265,6 +265,7 @@ export class ProdWorld {
   }
 }
 
+// #region standard-ramp
 export const STANDARD_RAMP: Stage[] = [
   { percent: 1, soakMs: 1 * DAY },
   { percent: 5, soakMs: 2 * DAY },
@@ -272,6 +273,7 @@ export const STANDARD_RAMP: Stage[] = [
   { percent: 50, soakMs: 3 * DAY },
   { percent: 100, soakMs: 3 * DAY },
 ];
+// #endregion
 
 /** Ramp policies as the experiment service defines them: a policy name sets the stages. */
 export const RAMP_POLICIES: Record<string, Stage[]> = {

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { Block } from '../content/schema';
+import { Highlighted, SketchBlock, SourceBlock } from './Code';
 
 /** Inline text: `code` and **bold**, nothing else. */
 export function Inline({ text }: { text: string }) {
@@ -26,7 +27,9 @@ export function Blocks({ blocks }: { blocks: Block[] }) {
           const items = b.list.map((x, j) => <li key={j}><Inline text={x} /></li>);
           return b.ordered ? <ol key={i}>{items}</ol> : <ul key={i}>{items}</ul>;
         }
-        if ('code' in b) return <pre key={i} className="code-block"><code>{b.code}</code></pre>;
+        if ('source' in b) return <SourceBlock key={i} refName={b.source} caption={b.caption} />;
+        if ('code' in b && b.from) return <SketchBlock key={i} code={b.code} from={b.from} />;
+        if ('code' in b) return <pre key={i} className="code-block">{b.lang === 'ts' ? <Highlighted code={b.code} /> : <code>{b.code}</code>}</pre>;
         if ('table' in b)
           return (
             <div key={i} className="table-wrap">

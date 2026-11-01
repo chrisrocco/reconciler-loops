@@ -46,6 +46,126 @@ Something often does go wrong. A guardrail drops at 25%. Someone has to roll the
 
 The loop has to remember one thing the world doesn't record: which experiment on the flag it manages. It keeps that as a named fact. If the fact is lost, the loop asks the owner again rather than guessing.
 
+## The code
+
+The loop is one spec, `experimentSpec`, in `src/scenarios/experiment.ts`. These are the parts to read first.
+
+A regression is one finding for every guardrail failing together. Its id is the highest stage the ramp has reached, so a rollback or a fix that didn't work keeps the same finding and its attempt count:
+
+<!-- source: src/scenarios/experiment.ts#experiment-regressions -->
+```ts
+/**
+ * Group failing guardrails into one regression per treatment (per arm). The id is the highest
+ * stage reached: stable while the set of failing metrics changes, through rollbacks, fixes that
+ * don't work, and the same problem recurring after a re-advance; new once the ramp reaches a
+ * stage it never had. (The time of the last advance would treat each recurrence as new, with
+ * fresh attempts and a fresh age, so a problem nobody can fix would never age out.)
+ */
+function regressions(exp: ExperimentState, readings: GuardrailReading[]): Regression[] {
+  const groups = exp.arms ? exp.arms.map((a) => ({ arm: a.name as string | undefined, peakStage: a.peakStage })) : [{ arm: undefined, peakStage: exp.peakStage }];
+  return groups.flatMap(({ arm, peakStage }) => {
+    const failing = readings.filter((r) => r.arm === arm && r.verdict === 'fail');
+    if (!failing.length) return [];
+    return [{
+      id: `regression:${arm ? `${arm}:` : ''}s${peakStage}`, kind: 'regression' as const, severity: 'blocking' as const,
+      summary: `${arm ? `${arm}: ` : ''}${failing.map((r) => r.guardrail).join(', ')} failing`,
+      data: { failing, severity: failing.some((r) => r.severity === 'severe') ? 'severe' as const : 'mild' as const, arm, peakStage },
+    }];
+  });
+}
+```
+
+Everything the loop files is found again by its label, and each open obligation becomes a blocker. In a multi-arm experiment, an arm's obligations hold only that arm:
+
+<!-- source: src/scenarios/experiment.ts#experiment-blockers -->
+```ts
+// An arm's obligations hold only that arm (finding scope; plan checks each arm); everything else holds the loop.
+const scope = (finding: string) => (armOf(finding) ? 'finding' as const : 'loop' as const);
+const blockers: Blocker[] = [
+  ...openBugs.map((b) => ({ id: `bug:${b.id}`, kind: 'child-bug', on: [b.finding], scope: scope(b.finding), summary: b.title, since: b.createdAt })),
+  ...fixes.filter((x) => x.state !== 'in-prod').map((x) => ({ id: `deploy:${x.clId}`, kind: 'deploy', on: [x.finding], scope: scope(x.finding), summary: `${x.clId} rolling out` })),
+  ...pages.filter((p) => p.status === 'open').map((p) => ({ id: `page:${p.id}`, kind: 'page', on: [p.finding], scope: scope(p.finding), summary: p.reason, since: p.openedAt })),
+];
+```
+
+The agent's triage runs in `assess`. Its answer is stored once per attempt, so a workflow that restarts doesn't pay for it again, and a fix that didn't work gets a fresh look:
+
+<!-- source: src/scenarios/experiment.ts#experiment-assess -->
+```ts
+async assess(open, { memo, attempts, facts }) {
+  const out: Record<string, Triage> = {};
+  for (const f of open) {
+    if (f.kind !== 'regression') continue;
+    const ep = (attempts[f.id] ?? 0) + 1;
+    out[f.id] = await memo.get(`triage:${f.id}:${ep}`, () => acts.triage(facts[EXPERIMENT_ID] as string, f.data.failing, ep));
+  }
+  return out;
+},
+```
+
+`plan` is pure: it reads the frame and returns actions. Read it top to bottom. It repairs first (restarting an investigation nobody is running, mounting the experiment), then mitigates escalations, then responds to each open regression along the route triage chose, and advances a stage only on a clean frame:
+
+<!-- source: src/scenarios/experiment.ts#experiment-plan -->
+```ts
+plan(f) {
+  const { exp, bugs, investigations } = f.world;
+  const actions: ExpAction[] = [];
+
+  // 1. Repair — level-triggered self-healing: open child bug, nobody investigating.
+  for (const b of bugs.filter((b) => b.status === 'open'))
+    if (investigations[b.id] === 'unknown' || investigations[b.id] === 'terminated')
+      actions.push({ key: `start:${b.id}@${f.tick}`, kind: 'start-investigation', bugId: b.id });
+
+  // Mounting or creating the experiment is repair too: once people have answered.
+  if (!exp) {
+    const unmounted = f.open.find((x) => x.kind === 'unmounted');
+    if (unmounted) {
+      const n = (f.attempts[unmounted.id] ?? 0) + 1;
+      const { mountChoice, approvedConfig } = f.world;
+      if (mountChoice && mountChoice !== CREATE) actions.push({ key: `mount:${mountChoice}:${n}`, kind: 'mount', targets: [unmounted.id], experimentId: mountChoice });
+      else if (approvedConfig) actions.push({ key: `create:${flag}:${n}`, kind: 'create', targets: [unmounted.id], config: approvedConfig });
+    }
+    return { actions, wake: { afterMs: HOUR, signals: ['answered', 'child-closed'] }, note: f.held ? `unmounted; held by ${f.blockers.map((b) => b.id).join(',')}` : 'unmounted' };
+  }
+
+  // 2. Mitigate locally while a person takes over: the loop files the escalation (a page);
+  // the rollback names no targets, so it doesn't use up one of the breach's attempts.
+  for (const e of f.escalating) {
+    const arm = armOf(e.finding.id);
+    if (stageOf(exp, arm) > 0) actions.push({ key: `safe-hold:${e.finding.id}:${(f.attempts[e.finding.id] ?? 0) + 1}`, kind: 'rollback', to: 0, arm });
+  }
+
+  // 3. Respond — debugging playbook for each breach nobody is handling.
+  for (const x of f.open) {
+    if (x.kind !== 'regression') continue;
+    const ep = (f.attempts[x.id] ?? 0) + 1;
+    const t = f.assessments[x.id]!;
+    const arm = x.data.arm;
+    if (x.data.severity === 'severe' && stageOf(exp, arm) > 0) actions.push({ key: `rollback:${x.id}:${ep}`, kind: 'rollback', to: stageOf(exp, arm) - 1, arm });
+    // Hold, don't halt: the page is a loop-scoped blocker until on-call resolves it. If the
+    // breach is still there afterwards, it is triaged again as the next attempt.
+    if (t.route === 'escalate') actions.push(escalation({ finding: x, reason: t.reason }, f, budget));
+    if (t.route === 'quick-fix')
+      actions.push({ key: `fix:${x.id}:${ep}`, kind: 'submit-fix', targets: [x.id], patch: t.patch, deadlineMs: HOUR });
+    if (t.route === 'investigate')
+      actions.push({ key: `bug:${x.id}:${ep}`, kind: 'file-bug', targets: [x.id], title: t.title, signature: t.signature ?? x.id, deadlineMs: HOUR });
+  }
+
+  // 4. Progress — only on a clean frame. With several arms, each arm on its own clean slice.
+  if (exp.arms) return progressArms(f, exp, exp.arms, actions);
+  if (!f.findings.length && !f.blockers.length && exp.status === 'running') {
+    const soakLeft = exp.stageEnteredAt + exp.stages[exp.stage]!.soakMs - f.now;
+    if (f.world.readings.every((r) => r.verdict === 'pass') && soakLeft <= 0) {
+      actions.push(exp.stage < exp.stages.length - 1
+        ? { key: `advance:${exp.stage}->${exp.stage + 1}@${exp.stageEnteredAt}`, kind: 'advance', to: exp.stage + 1 }
+        : { key: 'conclude', kind: 'conclude' });
+    }
+    return { actions, wake: { afterMs: clamp(soakLeft, 15 * MIN, 6 * HOUR) }, note: `stage ${exp.stage}, soak left ${Math.max(0, soakLeft)}` };
+  }
+  return { actions, wake: wakeWhileHeld(f), note: f.held ? `held by ${f.blockers.map((b) => b.id).join(',')}` : undefined };
+},
+```
+
 ## In the simulation
 
 Every run happens in a realistic world: noisy metrics, flaky systems, agents that are sometimes wrong, reviews in working hours, daily release cuts and weekday rollouts. A seed picks one draw of that world, so the same scenario plays out differently from seed to seed while the loop's guarantees hold.

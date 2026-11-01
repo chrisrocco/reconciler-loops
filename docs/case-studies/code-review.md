@@ -60,6 +60,136 @@ One rule shapes the whole loop: **every submit requirement that isn't met is a f
 
 One caution. Each follow-up message is a new finding, so attempts and age start over with every reply. An endless back-and-forth on one thread never escalates by itself. A limit on messages per thread closes that gap.
 
+## The code
+
+The spec in `src/scenarios/code-review.ts` is short, because each part is a named function that can be tested on its own:
+
+<!-- source: src/scenarios/code-review.ts#review-spec -->
+```ts
+export function codeReviewLoop(
+  acts: CodeReviewActivities,
+  input: CodeReviewInput,
+): ReconcilerSpec<ChangeView, ReviewFinding, ReviewAction, Judgment> {
+  const policy = input.policy ?? DEFAULT_POLICY;
+  return {
+    name: `code-review:${input.change}`,
+    budget: CODE_REVIEW_BUDGET,
+
+    // Look: one read of the change, then pure functions decide what's wrong and what's in hand.
+    async observe() {
+      const change = await acts.getChange(input.change);
+      return { world: change, findings: findingsIn(change), blockers: blockersIn(change) };
+    },
+
+    // Judge each open thread once per message: what kind of comment is it?
+    async assess(open, { memo }) {
+      return judgeThreads(open, (t, id) => memo.get(`judge:${id}`, () => acts.judge(input.change, t)));
+    },
+
+    // Goal: the change is submitted, by the agent or by a person.
+    done: ({ world }) => (world.status === 'submitted' ? `submitted at patchset ${world.patchset}` : world.status === 'abandoned' ? 'abandoned by its owner' : undefined),
+
+    // Decide: answer what's open, then submit once every requirement is met.
+    plan(frame) {
+      return { actions: [...respond(frame, policy), ...moveForward(frame)], wake: wakeFor(frame) };
+    },
+
+    // Act: one idempotent effect per action, escalations included.
+    act: (action, frame) => perform(acts, input.change, action, frame),
+  };
+}
+```
+
+Findings are every submit requirement that isn't met. Blockers are whatever is already on its way to meeting one:
+
+<!-- source: src/scenarios/code-review.ts#review-findings -->
+```ts
+/** Everything wrong with the change that the agent should drive to resolution. */
+export function findingsIn(c: ChangeView): ReviewFinding[] {
+  return [
+    ...c.threads.filter(awaitsUs(c)).map(threadFinding),
+    ...c.requirements.filter((r) => !r.satisfied).map(requirementFinding),
+    ...c.checks.filter((k) => k.required && k.state !== 'passed').map(checkFinding),
+    ...(c.mergeable.ok ? [] : [conflictFinding(c.mergeable)]),
+  ];
+}
+```
+
+<!-- source: src/scenarios/code-review.ts#review-blockers -->
+```ts
+/** Work the world shows is already in hand. Nothing here holds the whole loop. */
+export function blockersIn(c: ChangeView): Blocker[] {
+  return [
+    ...c.threads.flatMap(waitingOnOwner(c)),
+    ...c.requirements.flatMap(assignedReviewer(c)),
+    ...c.checks.filter((k) => k.required && k.state === 'running').map(runningCheck),
+  ];
+}
+```
+
+The agent only classifies each comment. This table, which a team can tune, decides what to do about it:
+
+<!-- source: src/scenarios/code-review.ts#review-policy -->
+```ts
+/** What the policy does with each category. A team tunes this, like permission settings. */
+export type Response = { act: 'fix' } | { act: 'reply'; send: 'post' | 'draft' } | { act: 'ask-owner' };
+export type ResponsePolicy = Record<Category, Response>;
+
+export const DEFAULT_POLICY: ResponsePolicy = {
+  fix: { act: 'fix' },
+  question: { act: 'reply', send: 'post' },
+  disagree: { act: 'reply', send: 'draft' },
+  decision: { act: 'ask-owner' },
+  fyi: { act: 'reply', send: 'post' },
+  'not-useful': { act: 'reply', send: 'post' },
+};
+```
+
+`respond` turns each open finding into an action, with the attempt number in every key. Everything that needs a code change goes into one new patchset:
+
+<!-- source: src/scenarios/code-review.ts#review-respond -->
+```ts
+/**
+ * The response to each open finding, with the attempt number in every key. Everything that needs
+ * a code change (threads to fix, failing checks, a conflict a rebase can't solve) goes into ONE
+ * revision: these are independent items handled together, so batching them in plan is right.
+ */
+export function respond(f: ReviewFrame, policy: ResponsePolicy): ReviewAction[] {
+  const actions: ReviewAction[] = [];
+  const toRevise: ReviewFinding[] = [];
+  for (const x of f.open) {
+    const n = (f.attempts[x.id] ?? 0) + 1;
+    if (x.kind === 'thread') {
+      const judged = f.assessments[x.id]!;
+      const how = policy[judged.category];
+      if (how.act === 'fix') toRevise.push(x);
+      else if (how.act === 'ask-owner') actions.push(askOwner(f, x, judged.rationale));
+      else actions.push({ key: `reply:${x.id}:${n}`, kind: 'reply', targets: [x.id], thread: x.data, category: judged.category, draft: how.send === 'draft', deadlineMs: how.send === 'draft' ? HOUR : undefined });
+    }
+    if (x.kind === 'requirement') {
+      const who = pickReviewer(x.data, f.world);
+      actions.push(who
+        // No targets: adding someone isn't an attempt at the finding, and it mustn't start its age.
+        // The requirement ages only while it's the new reviewer's turn (see assignedReviewer).
+        ? { key: `add-reviewer:${x.id}:${who}`, kind: 'add-reviewer', user: who, requirement: x.id }
+        : askOwner(f, x, `nobody available can grant ${x.data.summary}`));
+    }
+    if (x.kind === 'check') {
+      // The check system thinks it's flaky and it has only run once on this patchset: rerun it. Otherwise fix it.
+      if (x.data.state === 'failed' && x.data.likelyFlaky && x.data.runs < 2)
+        actions.push({ key: `rerun:${x.id}@ps${x.data.patchset}`, kind: 'rerun', targets: [x.id], check: x.data.name, deadlineMs: HOUR });
+      else if (x.data.state === 'failed') toRevise.push(x);
+    }
+    if (x.kind === 'conflict') {
+      if (x.data.autoRebase) actions.push({ key: `rebase:${x.id}:${n}@${x.data.targetHead}`, kind: 'rebase', targets: [x.id], onto: x.data.targetHead, deadlineMs: HOUR });
+      else toRevise.push(x);
+    }
+  }
+  if (toRevise.length) actions.unshift(revision(f, toRevise));
+  return actions;
+}
+```
+
 ## In the simulation
 
 | Variant | What to watch |

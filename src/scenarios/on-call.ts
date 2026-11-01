@@ -57,11 +57,13 @@ type OnCallAction =
   | { key: string; kind: 'resume'; targets: string[]; release: string }
   | { key: string; kind: 'file-issue'; targets: string[]; finding: string; owner: string; title: string; deadlineMs: number };
 
+// #region oncall-follow-on
 /** The finding an issue's fix also clears: a quarantined test, a paused release, a reverted first bad CL. */
 export const followOn = (finding: string) =>
   finding.startsWith('build:') ? [`reverted:${finding.split('@')[1]}`]
     : finding.startsWith('flaky:') ? [finding.replace(/^flaky:/, 'quarantined:')]
     : finding.startsWith('canary:') ? [`paused:${finding.split(':')[1]}`] : [];
+// #endregion
 
 export function onCallSpec(_rt: Runtime, acts: OnCallActivities, input: OnCallInput): ReconcilerSpec<OnCallWorld, OnCallFinding, OnCallAction> {
   const self = `oncall:${input.team}`;
@@ -71,6 +73,7 @@ export function onCallSpec(_rt: Runtime, acts: OnCallActivities, input: OnCallIn
     name: self,
     budget,
 
+    // #region oncall-observe
     async observe() {
       const [broken, flaky, releases, reverts, issues] = await Promise.all([
         acts.brokenTargets(), acts.flakyTests(), acts.releases(), acts.reverts(), acts.listIssues(self),
@@ -89,7 +92,9 @@ export function onCallSpec(_rt: Runtime, acts: OnCallActivities, input: OnCallIn
       }));
       return { world: { broken, flaky, releases, reverts, issues }, findings, blockers };
     },
+    // #endregion
 
+    // #region oncall-plan
     plan(f) {
       const actions: OnCallAction[] = [];
       const n = (id: string) => (f.attempts[id] ?? 0) + 1;
@@ -98,10 +103,12 @@ export function onCallSpec(_rt: Runtime, acts: OnCallActivities, input: OnCallIn
 
       // Respond: mitigate locally (no targets, so it isn't an attempt), delegate durably (one issue).
       for (const x of f.open) {
+        // #region oncall-build
         if (x.kind === 'build') {
           actions.push({ key: `revert:${x.data.suspects[0]}`, kind: 'revert', cl: x.data.suspects[0]! });
           actions.push(issue(x, x.id, x.data.owner, `${x.data.target} broken by ${x.data.firstBadCl}`));
         }
+        // #endregion
         if (x.kind === 'flaky') {
           actions.push({ key: `quarantine:${x.data.test}:${n(x.id)}`, kind: 'quarantine', test: x.data.test });
           actions.push(issue(x, x.id, x.data.owner, `${x.data.test} is flaky`));
@@ -116,6 +123,7 @@ export function onCallSpec(_rt: Runtime, acts: OnCallActivities, input: OnCallIn
         if (x.kind === 'paused') actions.push({ key: `resume:${x.data.id}:${n(x.id)}`, kind: 'resume', targets: [x.id], release: x.data.id });
       }
 
+      // #region oncall-next-suspect
       // Keep mitigating while the owner works: a revert that landed without turning the build green
       // means the first suspect was innocent. Revert the next one (its CL is in the key).
       for (const x of f.blocked) {
@@ -125,10 +133,12 @@ export function onCallSpec(_rt: Runtime, acts: OnCallActivities, input: OnCallIn
         const next = x.data.suspects.find((cl) => !reverted.includes(cl));
         if (reverted.length && settled && next) actions.push({ key: `revert:${next}`, kind: 'revert', cl: next });
       }
+      // #endregion
 
       const counts = ['build', 'flaky', 'quarantined', 'canary', 'paused', 'reverted'].map((k) => `${f.findings.filter((x) => x.kind === k).length} ${k}`);
       return { actions, wake: { afterMs: 30 * MIN }, note: counts.join(', ') };
     },
+    // #endregion
 
     async act(a) {
       switch (a.kind) {

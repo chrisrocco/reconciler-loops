@@ -93,6 +93,7 @@ export interface CampaignInput {
   maxPerOwner?: number;
 }
 
+// #region campaign-types
 interface CampaignWorld {
   legacy: LegacyComponent[]; changes: MigrationChange[]; allowlist: string[];
   cleanup: 'not-started' | 'running' | 'done'; children: Record<string, WorkflowStatus>;
@@ -103,6 +104,7 @@ type CampaignAction =
   | { key: string; kind: 'restart-migration'; path: string }
   | { key: string; kind: 'shrink-allowlist'; targets: string[]; paths: string[] }
   | { key: string; kind: 'cleanup' };
+// #endregion
 
 export function campaignSpec(rt: Runtime, acts: MigrationActivities, input: CampaignInput): ReconcilerSpec<CampaignWorld, CampaignFinding, CampaignAction> {
   const self = `campaign:${input.name}`;
@@ -113,6 +115,7 @@ export function campaignSpec(rt: Runtime, acts: MigrationActivities, input: Camp
     name: self,
     budget,
 
+    // #region campaign-observe
     async observe() {
       const [legacy, changes, allowlist, cleanup] = await Promise.all([acts.listLegacy(), acts.listChanges(self), acts.getAllowlist(), acts.cleanupState()]);
       const open = changes.filter((c) => c.state === 'open');
@@ -123,14 +126,18 @@ export function campaignSpec(rt: Runtime, acts: MigrationActivities, input: Camp
       if (stale.length) findings.push({ id: 'allowlist-stale', kind: 'allowlist-stale', severity: 'advisory', summary: `${stale.length} migrated paths still allowlisted`, data: stale });
       const blockers: Blocker[] = [
         ...open.map((c) => ({ id: `migration:${c.id}`, kind: c.withTeam ? 'team' : 'migration', on: [`legacy:${c.path}`], scope: 'finding' as const, summary: c.withTeam ? `with ${c.owner}` : `migrating (${c.review})`, since: c.withTeam?.since ?? c.createdAt })),
+        // #region campaign-prerequisites
         // Prerequisites: wait for the old-framework components this one uses. These never age.
         ...legacy.flatMap((c) => c.uses.filter((d) => remaining.has(d)).map((d) => ({ id: `needs:${d}`, kind: 'prerequisite', on: [`legacy:${c.path}`], scope: 'finding' as const, summary: `${c.path} uses ${d}`, prerequisite: true }))),
+        // #endregion
       ];
       return { world: { legacy, changes, allowlist, cleanup, children }, findings, blockers };
     },
+    // #endregion
 
     done: (f) => (!f.world.legacy.length && f.world.cleanup === 'done' ? 'migrated, and the old framework removed' : undefined),
 
+    // #region campaign-plan
     plan(f) {
       const { legacy, changes, children, cleanup } = f.world;
       const actions: CampaignAction[] = [];
@@ -140,6 +147,7 @@ export function campaignSpec(rt: Runtime, acts: MigrationActivities, input: Camp
       for (const c of open) if (!c.withTeam && (children[c.path] === 'unknown' || children[c.path] === 'terminated'))
         actions.push({ key: `restart:${c.path}@${f.tick}`, kind: 'restart-migration', path: c.path });
 
+      // #region campaign-limits
       // 2. Respond, within work-in-progress limits: smallest first. The rest stay open, untouched.
       // Claimed findings count as in flight too: their child has started but its change isn't listed yet.
       const claimed = f.claimed.flatMap((x) => (x.kind === 'legacy' ? [x.data] : []));
@@ -154,6 +162,7 @@ export function campaignSpec(rt: Runtime, acts: MigrationActivities, input: Camp
         inFlight++;
         perOwner[x.data.owner] = (perOwner[x.data.owner] ?? 0) + 1;
       }
+      // #endregion
       const stale = f.open.find((x) => x.kind === 'allowlist-stale');
       if (stale) actions.push({ key: `allowlist:${legacy.length}`, kind: 'shrink-allowlist', targets: [stale.id], paths: legacy.map((c) => c.path) });
 
@@ -164,6 +173,7 @@ export function campaignSpec(rt: Runtime, acts: MigrationActivities, input: Camp
         note: `${legacy.length} left, ${open.length} in flight, ${f.open.filter((x) => x.kind === 'legacy').length} ready`,
       };
     },
+    // #endregion
 
     async act(a) {
       switch (a.kind) {
@@ -207,6 +217,7 @@ export function componentSpec(rt: Runtime, acts: MigrationActivities, input: Com
     name: migrationId(input.path),
     budget: { maxDurationMs: 30 * DAY, maxAttemptsPerFinding: 3, escalationDeadlineMs: HOUR },
 
+    // #region component-observe
     async observe({ memo }) {
       const component = await acts.getComponent(input.path);
       const change = (await acts.listChanges(input.parent)).find((c) => c.path === input.path && c.state === 'open');
@@ -230,9 +241,11 @@ export function componentSpec(rt: Runtime, acts: MigrationActivities, input: Com
       }
       return { world: { component, change, checks }, findings, blockers };
     },
+    // #endregion
 
     done: (f) => (!f.world.component ? (f.world.change?.state === 'submitted' ? 'submitted' : 'migrated') : undefined),
 
+    // #region component-plan
     plan(f) {
       const actions: ComponentAction[] = [];
       const n = (id: string) => (f.attempts[id] ?? 0) + 1;
@@ -245,14 +258,17 @@ export function componentSpec(rt: Runtime, acts: MigrationActivities, input: Com
         const ids = comments.map((x) => x.id).sort();
         actions.push({ key: `address:${ids.join(',')}:${Math.max(...ids.map(n))}`, kind: 'address', targets: ids, commentIds: comments.map((x) => x.data.commentId!) });
       }
+      // #region component-forward
       // Move forward on a clean frame: verified → ask for review; approved → submit.
       const c = f.world.change;
       if (c && !f.findings.length && !f.blockers.length && !f.claimed.length && f.world.checks) {
         if (c.review === 'none') actions.push({ key: `review:r${c.rev}`, kind: 'request-review' });
         if (c.review === 'approved') actions.push({ key: `submit:r${c.rev}`, kind: 'submit' });
       }
+      // #endregion
       return { actions, wake: { afterMs: f.held ? 4 * HOUR : HOUR }, note: c ? `r${c.rev} ${c.review}` : undefined };
     },
+    // #endregion
 
     async act(a, f) {
       const change = f.world.change;

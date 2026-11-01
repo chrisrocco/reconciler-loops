@@ -6,6 +6,10 @@ export interface Doc { title: string; summary: string; blocks: Block[] }
  * The Markdown the case studies are written in, as lesson blocks: a `#` title, then its first
  * paragraph as the summary; `##` headings, paragraphs, `-` and `1.` lists, pipe tables,
  * `>` callouts and fenced code. Inline `code` and **bold** are left for <Inline>.
+ *
+ * `<!-- source: src/path.ts#region -->` before a fenced block makes it a source block: the site
+ * shows the region straight from the repository, and `npm run docs:sources` refreshes the
+ * copy in the Markdown, for reading on GitHub.
  */
 export function parseMarkdown(md: string): Doc {
   const lines = md.replace(/\r\n/g, '\n').split('\n');
@@ -16,6 +20,13 @@ export function parseMarkdown(md: string): Doc {
   while (i < lines.length) {
     const line = lines[i]!;
     if (!line.trim()) { i++; continue; }
+    const src = line.match(/^<!-- source: (\S+) -->$/);
+    if (src) {
+      blocks.push({ source: src[1]! });
+      for (i++; i < lines.length && !lines[i]!.trim(); i++);
+      if (lines[i]?.startsWith('```')) for (i++; i < lines.length && !lines[i++]!.startsWith('```'););
+      continue;
+    }
     if (line.startsWith('```')) {
       const body: string[] = [];
       for (i++; i < lines.length && !lines[i]!.startsWith('```'); i++) body.push(lines[i]!);

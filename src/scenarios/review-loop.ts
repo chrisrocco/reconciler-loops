@@ -31,6 +31,7 @@ export interface ReviewInput {
   maxAttemptsPerFinding?: number;
 }
 
+// #region inline-review
 export function reviewLoopSpec(
   acts: ReviewActivities,
   input: ReviewInput,
@@ -78,3 +79,4 @@ export function reviewLoopSpec(
     },
   };
 }
+// #endregion

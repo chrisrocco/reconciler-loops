@@ -174,6 +174,7 @@ export type Facts = Record<string, string | number | boolean | undefined>;
 
 // ───────────────────────────── Budget & outcome ─────────────────────────────
 
+// #region budget
 export interface Budget {
   /** Finite loops only: stop (safe hold) after this long. Omit for loops that never end. */
   maxDurationMs?: number;
@@ -186,7 +187,9 @@ export interface Budget {
   /** How long an escalation may take to show up in the world. Default 1 hour. */
   escalationDeadlineMs?: number;
 }
+// #endregion
 
+// #region outcome
 /** The only three ways a loop ends — goal met, out of time, told to stop — plus a checkpoint. */
 export type Outcome<W, F extends Finding> =
   | { status: 'done'; reason: string; frame: Frame<W, F, any>; memory: LoopMemory }
@@ -194,6 +197,7 @@ export type Outcome<W, F extends Finding> =
   | { status: 'escalated' | 'failed'; reason: string; frame: Frame<W, F, any>; memory: LoopMemory }
   /** Ran `maxTicksPerRun` ticks (or history got large); caller should continue-as-new with `memory`. */
   | { status: 'checkpoint'; memory: LoopMemory };
+// #endregion
 
 // ───────────────────────────── Spec ─────────────────────────────
 
@@ -209,6 +213,7 @@ export interface ObserveCtx {
   facts: Readonly<Facts>;
 }
 
+// #region spec
 /**
  * A reconciler is up to five functions. Only `done` and `plan` must be pure;
  * `observe`, `assess` and `act` call activities.
@@ -227,6 +232,7 @@ export interface ReconcilerSpec<W, F extends Finding, A extends Action, J = neve
   act(action: A | EscalateAction, frame: Frame<W, F, J>, facts: Facts): Promise<void>;
   budget?: Budget;
 }
+// #endregion
 
 // ───────────────────────────── Trace ─────────────────────────────
 

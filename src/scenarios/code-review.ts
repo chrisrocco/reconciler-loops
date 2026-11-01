@@ -103,6 +103,7 @@ export type Category =
 
 export interface Judgment { category: Category; rationale: string }
 
+// #region review-policy
 /** What the policy does with each category. A team tunes this, like permission settings. */
 export type Response = { act: 'fix' } | { act: 'reply'; send: 'post' | 'draft' } | { act: 'ask-owner' };
 export type ResponsePolicy = Record<Category, Response>;
@@ -115,6 +116,7 @@ export const DEFAULT_POLICY: ResponsePolicy = {
   fyi: { act: 'reply', send: 'post' },
   'not-useful': { act: 'reply', send: 'post' },
 };
+// #endregion
 
 export type ReviewAction =
   | { key: string; kind: 'revise'; targets: string[]; threads: Thread[]; checks: string[]; conflict: boolean }
@@ -160,6 +162,7 @@ type ReviewFrame = Frame<ChangeView, ReviewFinding, Judgment>;
 
 // ───────────────────────────── the loop ─────────────────────────────
 
+// #region review-spec
 export function codeReviewLoop(
   acts: CodeReviewActivities,
   input: CodeReviewInput,
@@ -192,9 +195,11 @@ export function codeReviewLoop(
     act: (action, frame) => perform(acts, input.change, action, frame),
   };
 }
+// #endregion
 
 // ───────────────────────────── what the loop sees ─────────────────────────────
 
+// #region review-findings
 /** Everything wrong with the change that the agent should drive to resolution. */
 export function findingsIn(c: ChangeView): ReviewFinding[] {
   return [
@@ -204,7 +209,9 @@ export function findingsIn(c: ChangeView): ReviewFinding[] {
     ...(c.mergeable.ok ? [] : [conflictFinding(c.mergeable)]),
   ];
 }
+// #endregion
 
+// #region review-blockers
 /** Work the world shows is already in hand. Nothing here holds the whole loop. */
 export function blockersIn(c: ChangeView): Blocker[] {
   return [
@@ -213,6 +220,7 @@ export function blockersIn(c: ChangeView): Blocker[] {
     ...c.checks.filter((k) => k.required && k.state === 'running').map(runningCheck),
   ];
 }
+// #endregion
 
 /** A thread waits on us when its latest published message is from a reviewer (a person or an analyzer). */
 export const awaitsUs = (c: ChangeView) => (t: Thread) => {
@@ -284,6 +292,7 @@ export async function judgeThreads(open: ReviewFinding[], judge: (t: Thread, id:
 
 // ───────────────────────────── what the loop does about it ─────────────────────────────
 
+// #region review-respond
 /**
  * The response to each open finding, with the attempt number in every key. Everything that needs
  * a code change (threads to fix, failing checks, a conflict a rebase can't solve) goes into ONE
@@ -323,6 +332,7 @@ export function respond(f: ReviewFrame, policy: ResponsePolicy): ReviewAction[] 
   if (toRevise.length) actions.unshift(revision(f, toRevise));
   return actions;
 }
+// #endregion
 
 /** One new patchset for every finding that needs a code change. Its key names them all, at their highest attempt. */
 function revision(f: ReviewFrame, xs: ReviewFinding[]): ReviewAction {

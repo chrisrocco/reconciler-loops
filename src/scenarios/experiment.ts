@@ -142,12 +142,15 @@ export function experimentSpec(
     budget,
 
     async observe({ memo, facts }) {
+      // #region experiment-labels
       // Everything the loop filed is labeled with the flag, so it is found with or without the experiment id.
       const [bugs, fixes, pages] = await Promise.all([acts.listChildBugs(self), acts.listFixes(self), acts.listPages(self)]);
+      // #endregion
       const openBugs = bugs.filter((b) => b.status === 'open');
       const investigations = Object.fromEntries(
         await Promise.all(openBugs.map(async (b) => [b.id, await acts.workflowStatus(investigationId(b.id))] as const)),
       );
+      // #region experiment-blockers
       // An arm's obligations hold only that arm (finding scope; plan checks each arm); everything else holds the loop.
       const scope = (finding: string) => (armOf(finding) ? 'finding' as const : 'loop' as const);
       const blockers: Blocker[] = [
@@ -155,10 +158,12 @@ export function experimentSpec(
         ...fixes.filter((x) => x.state !== 'in-prod').map((x) => ({ id: `deploy:${x.clId}`, kind: 'deploy', on: [x.finding], scope: scope(x.finding), summary: `${x.clId} rolling out` })),
         ...pages.filter((p) => p.status === 'open').map((p) => ({ id: `page:${p.id}`, kind: 'page', on: [p.finding], scope: scope(p.finding), summary: p.reason, since: p.openedAt })),
       ];
+      // #endregion
       const shared = { bugs, fixes, pages, investigations };
 
       const expId = facts[EXPERIMENT_ID] as string | undefined;
       if (!expId) {
+        // #region experiment-ask
         // Unmounted: use an experiment already on the flag, or create one. People decide; a
         // question waiting for an answer holds the loop.
         const ask = <C>(q: Question<C>) => {
@@ -166,6 +171,7 @@ export function experimentSpec(
           if (answer === undefined) blockers.push({ id: `question:${q.key}`, kind: 'question', on: ['unmounted'], scope: 'loop', summary: q.question });
           return answer;
         };
+        // #endregion
         const candidates = await acts.findExperimentsByFlag(flag);
         const mountChoice = candidates.length
           ? ask({
@@ -194,6 +200,7 @@ export function experimentSpec(
       };
     },
 
+    // #region experiment-assess
     async assess(open, { memo, attempts, facts }) {
       const out: Record<string, Triage> = {};
       for (const f of open) {
@@ -203,9 +210,16 @@ export function experimentSpec(
       }
       return out;
     },
+    // #endregion
 
-    done: ({ world: { exp } }) => (exp?.status === 'complete' ? 'ramped to 100%' : exp?.status === 'aborted' ? 'aborted by owner' : undefined),
+    // #region experiment-done
+    done: ({ world: { exp } }) =>
+      exp?.status === 'complete' ? 'ramped to 100%'
+      : exp?.status === 'aborted' ? 'aborted by owner'
+      : undefined,
+    // #endregion
 
+    // #region experiment-plan
     plan(f) {
       const { exp, bugs, investigations } = f.world;
       const actions: ExpAction[] = [];
@@ -255,21 +269,26 @@ export function experimentSpec(
       if (!f.findings.length && !f.blockers.length && exp.status === 'running') {
         const soakLeft = exp.stageEnteredAt + exp.stages[exp.stage]!.soakMs - f.now;
         if (f.world.readings.every((r) => r.verdict === 'pass') && soakLeft <= 0) {
+          // #region experiment-advance-key
           actions.push(exp.stage < exp.stages.length - 1
             ? { key: `advance:${exp.stage}->${exp.stage + 1}@${exp.stageEnteredAt}`, kind: 'advance', to: exp.stage + 1 }
             : { key: 'conclude', kind: 'conclude' });
+          // #endregion
         }
         return { actions, wake: { afterMs: clamp(soakLeft, 15 * MIN, 6 * HOUR) }, note: `stage ${exp.stage}, soak left ${Math.max(0, soakLeft)}` };
       }
       return { actions, wake: wakeWhileHeld(f), note: f.held ? `held by ${f.blockers.map((b) => b.id).join(',')}` : undefined };
     },
+    // #endregion
 
     async act(a, f, facts) {
       const expId = () => f.world.exp!.id;
       switch (a.kind) {
+        // #region experiment-facts
         // The only place the experiment id is written.
         case 'mount': facts[EXPERIMENT_ID] = a.experimentId; break;
         case 'create': facts[EXPERIMENT_ID] = (await acts.createExperiment(a.config, `${self}/${a.key}`)).id; break;
+        // #endregion
         case 'rollback': await acts.setStage(expId(), a.to, `${self}/${a.key}`, a.arm); break;
         case 'advance': await acts.setStage(expId(), a.to, `${self}/${a.key}`, a.arm); break;
         case 'conclude': await acts.conclude(expId(), `${self}/${a.key}`); break;
@@ -293,6 +312,7 @@ export function experimentSpec(
   };
 }
 
+// #region experiment-regressions
 /**
  * Group failing guardrails into one regression per treatment (per arm). The id is the highest
  * stage reached: stable while the set of failing metrics changes, through rollbacks, fixes that
@@ -312,6 +332,7 @@ function regressions(exp: ExperimentState, readings: GuardrailReading[]): Regres
     }];
   });
 }
+// #endregion
 /** The arm a finding belongs to, for per-arm regressions (`regression:<arm>:s<stage>`). */
 const armOf = (finding: string) => { const p = finding.split(':'); return p[0] === 'regression' && p.length === 3 ? p[1] : undefined; };
 const stageOf = (exp: ExperimentState, arm?: string) => (arm ? exp.arms!.find((a) => a.name === arm)!.stage : exp.stage);
@@ -357,6 +378,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 /** Workflow id convention: `experiment:<flag>`, so a restart reuses it and child hints still land. */
 export const experimentWorkflowId = (flagName: string) => `experiment:${flagName}`;
 
+// #region experiment-workflow
 export async function experimentWorkflow(
   rt: Runtime, acts: ExperimentActivities, input: ExperimentInput & { memory?: any },
   opts: RunOptions & { decisions?: Decisions } = {},
@@ -370,3 +392,4 @@ export async function experimentWorkflow(
   }
   return out.status === 'done' ? { status: 'done', reason: out.reason } : { status: out.status };
 }
+// #endregion

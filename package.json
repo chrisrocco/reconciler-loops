@@ -6,6 +6,7 @@
   "scripts": {
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p .",
+    "docs:sources": "tsx scripts/docs-sources.ts",
     "site": "npm --prefix site run dev",
     "site:build": "npm --prefix site run build"
   },

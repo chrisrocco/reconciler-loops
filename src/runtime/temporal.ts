@@ -83,8 +83,10 @@ export function temporalRuntime(policy: DecisionPolicy = {}, answers: Record<str
   };
 }
 
+// #region log-tick
 /** Pass as `onTick`: one `tick` line per tick through the workflow logger. A plan repeating itself is a bug in its keys, so it is also logged as an error for the loop's owner. */
 export function logTick(rec: TickRecord) {
   if (rec.stalled.length) log.error('plan re-proposes actions already taken', { loop: rec.loop, findings: rec.stalled });
   log.info('tick', { ...rec });
 }
+// #endregion
