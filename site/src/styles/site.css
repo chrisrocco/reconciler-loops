@@ -64,6 +64,8 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .sim-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .sim-card-title { font-weight: 700; font-size: 16px; }
 .runs-for { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 700; white-space: nowrap; }
+.home-more { display: inline-block; margin-top: 14px; font-weight: 600; text-decoration: none; }
+.home-more:hover { text-decoration: underline; }
 .sim-card-go { margin-top: auto; color: var(--accent); font-weight: 600; font-size: 13.5px; }
 .sim-card-links { margin-top: auto; display: flex; justify-content: space-between; gap: 12px; font-size: 13.5px; font-weight: 600; }
 .sim-card-links a { text-decoration: none; }

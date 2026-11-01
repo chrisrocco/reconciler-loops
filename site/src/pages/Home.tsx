@@ -50,6 +50,9 @@ export function Home() {
             <p>Every tick re-reads where things actually stand and decides the next step from that. Nothing depends on remembering where it was, so a missed event costs a few minutes, never correctness.</p>
           </div>
         </div>
+        <a className="home-more" href={href({ page: 'learn', lesson: 'alternatives' })}>
+          Scripts aren't the only alternative. Compare all five: scripts, agent loops, event handlers, state machines and cron jobs →
+        </a>
       </section>
 
       <section className="home-band">

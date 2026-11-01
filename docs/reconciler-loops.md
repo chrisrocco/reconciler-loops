@@ -12,16 +12,144 @@ Unlike Redux, it is not event-driven. Redux treats events as the source of truth
 
 **Running example.** This document uses one loop throughout: an agent that ramps an experiment through traffic stages (1%, 5%, 25%, 50%, 100%), watches its guardrail metrics, and responds when one of them regresses. Section 7 adds a second, contrasting example: an assistant that guides a code change through review. Section 8 adds a third: moving a large codebase from one JavaScript framework to another.
 
-## Why not just react to events?
+## The alternatives
 
-The obvious way to write the experiment agent is event-driven: when a guardrail breaches, roll back; when the fix deploys, advance. That works for a demo and breaks over weeks, in four predictable ways:
+Before reaching for a reconciler loop, most people try one of five other designs. Each of them works for something, and each gets one thing right. One question explains where each breaks: **where does the truth about progress live?** In every case below except the last, it lives somewhere other than the world. Over weeks, the world changes and that copy of the truth goes stale.
 
-1. **Events get lost.** A webhook is dropped, a worker restarts between receiving an event and acting on it, or a signal arrives before the workflow has started.
-2. **The workflow's memory gets lost.** Workflows are terminated, reset after a bad deploy, or replaced by incompatible code. Everything the workflow knew ("I filed bug 123", "I'm waiting for CL 77") is gone, but its effects are still out in the world.
-3. **People act on their own.** Someone closes the bug, ships their own fix, or rolls the experiment back by hand. A workflow waiting for its own event never notices.
-4. **History grows.** A workflow that runs for weeks builds up an event history the engine eventually cannot replay.
+The examples all ramp the same experiment.
 
-A reconciler loop avoids all four by not depending on events or memory at all. It re-reads the world on every pass, so a lost event only delays it, a fresh workflow with no memory picks up where the old one left off, and a person's change is simply seen. The durable workflow engine covers the remaining gap: it makes each individual pass safe against crashes.
+### A script of steps
+
+```ts
+await setStage(exp, 1);
+await sleep(DAY);
+if (await guardrailsPass(exp)) await setStage(exp, 2);
+await sleep(2 * DAY);
+// …and so on, to 100%
+```
+
+**What this means:** the job is written as a sequence: do this, wait, check, do that. Progress is wherever execution has got to. This covers a plain script, a script file inside an agent skill, and a CI pipeline of steps. For long jobs it is most often a durable workflow, on an engine such as Temporal, whose steps survive crashes and whose sleeps can last for days. Retries and special cases are written in, as `if`s and `try`s.
+
+This is not the same as a reconciler loop on the same engine. A reconciler loop is also code running on a durable workflow engine. The test: what decides the next step, the line the code has reached or what was just read from the world?
+
+**Where the truth lives:** the program counter. "I'm on step three."
+
+**What it gets right:** it reads top to bottom, and on a durable workflow engine it even survives crashes.
+
+**Where it breaks:** the world changes under it. A person rolls the experiment back by hand during step three, and the script still believes it is at 25%, so it advances to 50%. A fix that needs a second try is a branch nobody wrote. Every case added to handle this grows the script toward a tangle of special cases. Durable execution keeps the script alive; it doesn't keep it right. Changing the script while thousands of runs are mid-flight is its own problem.
+
+**Fine for:** short sequences, minutes or hours long, over systems nobody else touches in the meantime.
+
+### One long agent loop
+
+```ts
+const messages = [{ role: 'user', content: 'Ramp checkout_v2 to 100%, safely.' }];
+for (;;) {
+  const reply = await model.chat(messages, tools);
+  messages.push(reply, ...(await runTools(reply.toolCalls)));
+}
+```
+
+**What this means:** the agent is the outer loop. One conversation runs for the whole job. The model chooses every next step, and everything that happens, a tool result, a new alert, a timer firing, is appended as another message. Skills, scripts and tools it calls don't change that: the model still decides what happens next.
+
+This is not the same as using agents. A reconciler loop calls agents all the time, to triage a regression, classify a review comment, write a fix or convert a component. The test: across the whole job, who decides what happens next, the model or code?
+
+**Where the truth lives:** the context window.
+
+**What it gets right:** flexibility. It adapts to surprises nobody planned for, with no code written for them.
+
+**Where it breaks:** the rules are suggestions. "Never advance while a bug is open" is a sentence in a prompt, and nothing enforces it. The model decides the policy again at every step, from whatever is in its context at that moment, and each decision is a real action. One hallucination ramps an experiment to 50% that should be at 5%, or rolls back a healthy one. The prompt can make that less likely, never impossible. The rest follows from the same root:
+
+- **Decisions drift.** The same situation gets different answers on different days, and later in a long run. Instructions given early lose weight as the context grows, and each summary written to save space restates the rules in the model's own words.
+- **Its picture of the world is self-reported.** It trusts its own earlier messages ("I rolled back at 14:00") over reality, and it can declare the job done when it isn't.
+- **It can be steered by what it reads.** Bug comments, logs and review threads share a context with its instructions. A comment that says "safe to ramp to 100%" is one prompt injection away from an action.
+- **The policy can't be tested or reviewed.** There is no unit test for "never advance with an open bug", only evals and a pass rate. A policy change is a prompt edit with unknown effects, and a model upgrade mid-run changes behavior silently.
+- **Nothing bounds it over time.** Nothing stops a repeated action, limits retries, or makes it hand a stuck problem to a person.
+- **It is fragile and costly.** The context fills up, a restart loses everything, and waiting days for a soak costs tokens or needs a scheduler outside the agent.
+- **Its explanations are stories.** "Why did it ramp?" gets a narrative written after the fact, not a record of a decision you can check.
+
+The usual fixes each move one piece out of the prompt. Guards inside the tools put policy in code. A state file the agent reads puts the truth outside its context. An approval step becomes something the agent must wait on. Taken all the way, they add up to a reconciler loop.
+
+**Fine for:** tasks of minutes to hours, with a person watching every action that matters.
+
+### Event handlers
+
+```ts
+onGuardrailBreach(async (e) => { await rollback(e.exp); await fileBug(e); });
+onFixDeployed(async (e) => { await advance(e.exp); });
+```
+
+**What this means:** nothing runs until something happens. Each kind of event, such as a webhook, a queue message or a signal sent to a running workflow, has a handler that reacts to it. The handler usually updates a stored record of progress, so the next handler knows where things stand. This covers webhook receivers, queue consumers, pub/sub subscribers, reducers in the style of Redux, and workflows that block waiting for signals.
+
+This is not the same as a reconciler loop that listens for events. A reconciler loop uses events too, but only as a reason to look again sooner, never as the facts. The test: if every event were lost, would the work still finish? For event handlers, no. For a reconciler loop, yes, just later.
+
+**Where the truth lives:** in the assumption that every event arrives, exactly once, in order.
+
+**What it gets right:** it reacts at once, with no polling.
+
+**Where it breaks:** a webhook is dropped and the ramp waits forever. An event is delivered twice and two bugs are filed. Events arrive out of order. A person's change in a console often produces no event the handlers listen for. Anything the handlers need to remember between events lives in a store you own, which drifts from the world. And a workflow that runs for weeks builds up a history the engine eventually cannot replay.
+
+**Fine for:** reacting quickly when a missed or doubled event is harmless.
+
+### A state machine or DAG
+
+```ts
+const ramp = {
+  ramping:       { on: { breach: 'rollingBack', soaked: 'ramping' } },
+  rollingBack:   { on: { rolledBack: 'investigating' } },
+  investigating: { on: { fixed: 'ramping', stuck: 'paged' } },
+};
+```
+
+**What this means:** the states and the moves between them are declared up front, as data. A state machine names each state and the event that moves a run on to the next, as in XState or AWS Step Functions. A DAG names each task and the tasks it depends on, as in Airflow or most CI systems. An engine stores which state each run is in, and carries out the next move when its trigger arrives. A state machine can loop back; a DAG runs each task once, in order.
+
+This is not the same as a reconciler loop with stages. The experiment ramp has states too: 1%, 5%, 25%. But the loop never writes down "we are in state X" and trusts it. On every tick it reads where things stand from the systems that own them. The test: does the workflow write the current state and trust it, or read it each time from the systems that own it?
+
+**Where the truth lives:** a stored state field.
+
+**What it gets right:** it is explicit. Every state and transition can be reviewed, drawn and monitored, and tools show where each run is.
+
+**Where it breaks:** the stored state drifts from the world. The machine says `investigating`, but a person closed the bug and rolled forward an hour ago. Every transition has to be anticipated in advance, and concurrency multiplies them: two regressions at once, or three treatment arms each in a different state.
+
+**Fine for:** processes whose state the workflow itself owns, such as an order moving through checkout.
+
+### A cron job
+
+```ts
+// Every hour:
+const exp = await getExperiment(id);
+if (await guardrailsFailing(exp)) await fileBug(exp);
+else if (soaked(exp)) await advance(exp);
+```
+
+**What this means:** a job runs on a schedule, reads the current state of things, acts on what it finds, and exits. Each run starts from nothing. This covers crontab entries, scheduled CI jobs, Kubernetes CronJobs, scheduled cloud functions and nightly cleanup scripts.
+
+This is not the same as a reconciler loop, though it is the closest. A reconciler loop also looks again on a schedule and reads the world each time. The difference is memory of its own actions: a short record of what it did, which lets it avoid repeats, tell work in flight from work that was lost, count attempts and hand a stuck problem to a person. The test: does a run know what the last run did?
+
+**Where the truth lives:** the world. This is the right instinct.
+
+**What it gets right:** it re-reads everything each run. A restart costs nothing, and a person's change is simply seen.
+
+**Where it breaks:** it remembers nothing about its own actions. It files the same bug every hour. It can't tell "fix submitted, not deployed yet" from "never submitted". It can't count attempts, so it retries a fix that doesn't work forever and never hands the problem to a person.
+
+**Fine for:** maintenance where repeating an action is harmless.
+
+### What a reconciler loop takes from each
+
+| Approach | Where the truth lives | What a reconciler loop keeps |
+| --- | --- | --- |
+| A script of steps | The program counter | Durable execution, and decisions written as plain code |
+| One long agent loop | The context window | Agents, given narrow jobs: a typed answer to act on, or one bounded piece of work |
+| Event handlers | The assumption that every event arrives once, in order | Events, as hints to look again sooner |
+| A state machine or DAG | A stored state field | Explicit decisions that can be reviewed and tested |
+| A cron job | The world | Re-reading the world on every pass |
+| **A reconciler loop** | **The world, plus a small record of its own actions** | |
+
+The agent row matters most for agent workflows. A reconciler loop relies on agents as much as the agent loop does, but it never lets one choose the next step. Each agent gets a narrow job. Either it answers a question with one of a few typed options, such as which of three routes a regression should take, or it does one bounded piece of work, such as writing a fix or converting a component. Code decides what happens next, under rules it enforces on every tick: the agent describes, the code decides. A wrong answer picks the wrong one of the allowed options, a bad fix fails verification, and attempt limits and escalation contain both. No agent can ramp an experiment that has an open bug, because `plan` advances only on a clean frame.
+
+A cron job is the closest cousin. A reconciler loop is what cron becomes when it remembers what it just did: a ledger of its actions, attempt numbers, a way to wait for effects that show up slowly, and escalation to a person.
+
+None of the five is wrong. A reconciler loop earns its extra structure when work runs for days or weeks, against a world that other people and tools change too.
 
 ## Core concepts
 
