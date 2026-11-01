@@ -23,7 +23,7 @@ export function Home() {
     <div className="home">
       <section className="hero">
         <div className="hero-text">
-          <h1>Agent workflows that run for weeks without losing the plot.</h1>
+          <h1>Agent workflows that run for weeks and keep the work moving.</h1>
           <p className="lede">
             A <b>reconciler loop</b> looks at the world, works out what is wrong and what is already being handled,
             takes at most one safe action per problem, and waits. Then it does it again. Nothing it needs lives
@@ -39,15 +39,15 @@ export function Home() {
       </section>
 
       <section className="home-band">
-        <h2>Why not just react to events?</h2>
+        <h2>Why not just write the steps?</h2>
         <div className="contrast">
           <div className="contrast-card bad">
-            <div className="contrast-title">Event-driven</div>
-            <p>A webhook is dropped, a worker restarts mid-step, a person closes the bug by hand. The workflow's picture of the world drifts, and it acts on things that are no longer true.</p>
+            <div className="contrast-title">A script of steps</div>
+            <p>Ramp to 5%, wait a day, check the metrics, ramp to 25%. Over weeks, a webhook is dropped, a worker restarts mid-step, a person rolls the experiment back by hand. The script still thinks it's on step three, and acts on things that are no longer true.</p>
           </div>
           <div className="contrast-card good">
-            <div className="contrast-title">Level-triggered</div>
-            <p>Every tick re-reads the world. Events are only a cue to look again early. A missed event costs a few minutes, never correctness.</p>
+            <div className="contrast-title">A loop over the world</div>
+            <p>Every tick re-reads where things actually stand and decides the next step from that. Nothing depends on remembering where it was, so a missed event costs a few minutes, never correctness.</p>
           </div>
         </div>
       </section>
