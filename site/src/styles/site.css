@@ -65,6 +65,12 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .sim-card-title { font-weight: 700; font-size: 16px; }
 .runs-for { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 700; white-space: nowrap; }
 .sim-card-go { margin-top: auto; color: var(--accent); font-weight: 600; font-size: 13.5px; }
+.sim-card-links { margin-top: auto; display: flex; justify-content: space-between; gap: 12px; font-size: 13.5px; font-weight: 600; }
+.sim-card-links a { text-decoration: none; }
+.sim-card-links a:hover { text-decoration: underline; }
+.case-link { display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 600; text-decoration: none; }
+.case-link:hover { text-decoration: underline; }
+.case-study .back { margin-bottom: 14px; }
 
 /* ── learn ── */
 .learn { display: grid; grid-template-columns: 270px minmax(0, 1fr); min-height: calc(100vh - var(--nav-h)); }

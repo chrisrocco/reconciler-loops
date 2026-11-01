@@ -4,8 +4,7 @@
  * Run: npx tsx examples/realistic-report.ts [seeds=30]
  */
 import { DAY } from '../src/core/time.js';
-import { realisticScenarios } from '../src/fakes/catalog.js';
-const SCENARIOS = realisticScenarios();
+import { SCENARIOS } from '../src/fakes/catalog.js';
 import { runRealistic } from '../src/fakes/realistic/harness.js';
 import type { WorldStats } from '../src/fakes/realistic/world.js';
 

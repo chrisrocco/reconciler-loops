@@ -28,6 +28,7 @@ export function SimShell({ sim, title, intro, variants, variant, controls, run, 
           <a className="back" href={href({ page: 'simulate' })}>← All simulations</a>
           <div className="brand-title">{title}</div>
           <div className="brand-sub">{intro}</div>
+          <a className="case-link" href={href({ page: 'case-study', sim })}>Read the case study →</a>
         </div>
         {controls && <div className="world-picker">{controls}</div>}
         <nav className="scenarios" aria-label="Variants">

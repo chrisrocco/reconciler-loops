@@ -30,7 +30,7 @@ export interface Defect {
   rcaWrongTimes?: number;
   /** Harm shows only after this long at or above the trigger stage (a novelty effect wearing off). */
   onsetMs?: number;
-  /** ProdWorld only: the treatment arm this defect is in, in a multi-arm experiment. */
+  /** The treatment arm this defect is in, in a multi-arm experiment. */
   arm?: string;
   /** Other guardrails the same cause moves (correlated metrics), optionally only after a delay. */
   alsoMoves?: { guardrail: string; afterMs?: number }[];

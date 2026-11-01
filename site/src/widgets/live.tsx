@@ -14,7 +14,7 @@ export function FrameWidget() {
   const [i, setI] = useState(0);
   useEffect(() => {
     let live = true;
-    runScenario(SCENARIOS.find((s) => s.id === 'quick-fix')!, 'ideal').then((r) => {
+    runScenario(SCENARIOS.find((s) => s.id === 'quick-fix')!).then((r) => {
       if (!live) return;
       setRun(r);
       const lane = r.lanes.find((l) => l.wf === EXP)!;

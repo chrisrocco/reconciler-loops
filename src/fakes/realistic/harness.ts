@@ -20,7 +20,7 @@ export interface RealisticRun {
 export async function runRealistic(scenario: Scenario, seed: number, rampPolicy = scenario.rampPolicy ?? 'standard'): Promise<RealisticRun> {
   const sim = new Sim();
   const world = new RealisticWorld(sim, seed);
-  world.addExperiment('E1', RAMP_POLICIES[rampPolicy]!);
+  world.addExperiment('E1', RAMP_POLICIES[rampPolicy]!, { arms: scenario.arms });
   scenario.defects.forEach((d) => world.addDefect(d));
   const trace: RealisticRun['trace'] = [];
   const onTick = (wf: string) => (r: TickRecord) => trace.push({ ...r, wf });

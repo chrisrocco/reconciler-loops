@@ -7,7 +7,9 @@ component (months), and an on-call agent that never ends. It is a **level-trigge
 Kubernetes controller, run on a durable-execution engine. The developer guide,
 [docs/reconciler-loops.md](docs/reconciler-loops.md), explains the concepts from scratch;
 this README is the map of the code. The site in `site/` teaches the pattern with an
-interactive tutorial and runs every loop as a live simulation.
+interactive tutorial and runs every loop as a live simulation. Each loop has a plain-English
+case study in [docs/case-studies/](docs/case-studies/): the job, what makes it hard, and what
+the pattern gives it.
 
 ```
             ┌──────────────────────────────── tick ─────────────────────────────────┐
@@ -178,8 +180,8 @@ The holdback ramp launches to 99% and keeps a 1% holdback for four weeks; with a
 whose harm only shows after ten days (`onsetMs`), it catches what a short soak would miss.
 A **multi-arm** experiment ramps each treatment arm on its own: regressions are per arm
 (`regression:<arm>:s<stage>`), an arm's bugs, fixes and pages hold only that arm
-(finding-scoped blockers), and each arm advances on its own clean slice of the frame. The
-idealized world models arms; the realistic world models one treatment.
+(finding-scoped blockers), and each arm advances on its own clean slice of the frame. In the
+realistic world each arm has its own traffic share, analysis window and noisy readout.
 
 **Migration** (`src/scenarios/migration.ts`). A campaign loop finds `legacy:<path>` per
 component still on the old framework and starts a child loop per component, within
@@ -266,14 +268,15 @@ npm run site:build      # static build in site/dist, servable from any path
   plan widget calls the experiment's own `plan`.
 - **Simulate**: every loop runs on the virtual-time simulator in the browser, using the real
   `src/` code, then plays back tick by tick: the experiment ramp (every catalog scenario,
-  any ramp policy, realistic or idealized world, multi-arm), code review, the inline review
+  any ramp policy and seed, multi-arm, all in the realistic world), code review, the inline review
   loop, the migration campaign, and the on-call agent. Each shows the loops as lanes of
   ticks, the world at the playhead, the frame the selected tick saw, and an event log.
 
 ## Realistic world: `src/fakes/realistic/`
 
 `ProdWorld` is deliberately ideal: exact metrics, instant consistency, an 8h deploy,
-agents that are always right. `RealisticWorld` runs the same scenarios against systems
+agents that are always right. It is the fixture for the exact unit tests and nothing else;
+the site runs only the realistic world. `RealisticWorld` runs the same scenarios against systems
 modeled on how a large engineering org runs experiments and ships fixes. Every run is
 reproducible from a seed. The framework code is unchanged; everything realistic lives
 behind the activity interfaces, the way a production adapter would.
@@ -307,7 +310,7 @@ src/core/        types.ts · reconcile.ts (the loop, ledger, escalation, retenti
 src/runtime/     sim.ts (virtual-time engine: children, hints, terminate) · temporal.ts (adapter, answer signal, logTick)
 src/scenarios/   review-loop.ts · code-review.ts · experiment.ts · investigation.ts · systems.ts
                  migration.ts (campaign + component) · on-call.ts
-src/fakes/       prod-world.ts (idealized, ramp policies, arms) · review-world.ts · review-system.ts (code review) · catalog.ts
+src/fakes/       prod-world.ts (idealized, for unit tests; ramp policies) · review-world.ts · review-system.ts (code review) · catalog.ts
                  migration-world.ts (codebase, SAMPLE_APP) · on-call-world.ts (seeded org)
                  realistic/ world.ts · metrics.ts · bug-tracker.ts · release.ts · calendar.ts · rng.ts · harness.ts
 examples/        experiment-timeline.ts · realistic-report.ts · temporal-workflows.ts (real proxyActivities/continueAsNew wiring)

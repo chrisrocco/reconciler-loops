@@ -6,7 +6,8 @@
  * of each fix has rolled out) lives here and is invisible to the loops. They only see it
  * through the same kind of systems production has, each with its usual imperfections:
  *
- *   experiment config   stage changes take minutes to propagate to serving
+ *   experiment config   stage changes take minutes to propagate to serving; in a multi-arm
+ *                       experiment each treatment arm has its own stage, traffic and readout
  *   metrics             noisy CIs, late data, stalls, false positives      (metrics.ts)
  *   issue tracker       rich statuses, lagging search, non-idempotent create (bug-tracker.ts)
  *   review + release    presubmit, human review, daily cut, weekday rollout (release.ts)
@@ -31,7 +32,8 @@ import { GUARDRAILS, MetricsPipeline, type Treatment } from './metrics.js';
 import { ReleasePipeline, type Cl } from './release.js';
 import { Rng, rngFor } from './rng.js';
 
-interface StageChange { at: number; effectiveAt: number; stage: number; key: string }
+/** A stage change: for the whole treatment, or for one arm in a multi-arm experiment. */
+interface StageChange { at: number; effectiveAt: number; stage: number; key: string; arm?: string }
 interface Exp extends ExperimentState { keys: Set<string>; history: StageChange[]; escalations: string[] }
 
 /** Counts of the imperfections that actually occurred in a run. */
@@ -52,6 +54,9 @@ const VERIFY_SOAK = 6 * HOUR;
 const ON_CALL_PATIENCE = 7 * 24 * HOUR;
 
 const ROUTES: Triage['route'][] = ['quick-fix', 'investigate', 'escalate'];
+
+/** The arm a finding is about, for a per-arm regression (`regression:<arm>:s<stage>`). */
+const armOf = (finding: string) => { const p = finding.split(':'); return p[0] === 'regression' && p.length === 3 ? p[1] : undefined; };
 
 export class RealisticWorld {
   readonly tracker: BugTracker;
@@ -88,11 +93,13 @@ export class RealisticWorld {
   }
 
 /** An experiment someone already set up on a flag; the loop mounts it. */
-  addExperiment(id: string, stages: Stage[], o: { flagName?: string; launchBug?: number } = {}) {
+  addExperiment(id: string, stages: Stage[], o: { flagName?: string; launchBug?: number; arms?: string[] } = {}) {
     const now = this.sim.now;
     this.exps.set(id, {
       id, flagName: o.flagName ?? FLAG, launchBug: o.launchBug ?? LAUNCH_BUG, stages, stage: 0, stageEnteredAt: now, status: 'running', peakStage: 0,
-      keys: new Set(), escalations: [], history: [{ at: now, effectiveAt: now, stage: 0, key: 'init' }],
+      arms: o.arms?.map((name) => ({ name, stage: 0, stageEnteredAt: now, peakStage: 0 })),
+      keys: new Set(), escalations: [],
+      history: (o.arms ?? [undefined]).map((arm) => ({ at: now, effectiveAt: now, stage: 0, key: 'init', arm })),
     });
   }
   /** The experiment a loop labeled `exp:<flag>` manages (the running one on that flag). */
@@ -105,10 +112,10 @@ export class RealisticWorld {
 
   // ───────────────────────────── ground truth ─────────────────────────────
 
-  /** The stage actually serving at t (config pushes take minutes to land). */
-  servingStage(exp: Exp, t: number) {
+  /** The stage actually serving at t, for the treatment or one arm (config pushes take minutes to land). */
+  servingStage(exp: Exp, t: number, arm?: string) {
     let s = 0;
-    for (const h of exp.history) if (h.effectiveAt <= t) s = h.stage;
+    for (const h of exp.history) if (h.arm === arm && h.effectiveAt <= t) s = h.stage;
     return s;
   }
 
@@ -139,47 +146,50 @@ export class RealisticWorld {
     return (h / thr(d.guardrail)) * thr(g);
   }
 
-  /** True harm of one defect on its guardrail at t. Load-dependent: none below its trigger stage. */
+  /** True harm of one defect on its guardrail at t, in its own arm. Load-dependent: none below its trigger stage. */
   harmOf(d: Defect, exp: Exp, t: number) {
     if (!d.guardrail) return 0;
-    if (d.triggerStage !== undefined && this.servingStage(exp, t) < d.triggerStage) return 0;
+    if (d.triggerStage !== undefined && this.servingStage(exp, t, d.arm) < d.triggerStage) return 0;
     if (d.onsetMs) {
       // A long-term effect: none until the treatment has been at the trigger stage this long.
-      const exposedAt = exp.history.find((h) => h.effectiveAt <= t && h.stage >= (d.triggerStage ?? 0))?.effectiveAt;
+      const exposedAt = exp.history.find((h) => h.arm === d.arm && h.effectiveAt <= t && h.stage >= (d.triggerStage ?? 0))?.effectiveAt;
       if (exposedAt === undefined || t - exposedAt < d.onsetMs) return 0;
     }
     return this.effectPct(d) * (1 - this.cureFraction(d, t));
   }
 
-  treatment(exp: Exp): Treatment {
+  /** The treatment as the analysis sees it: the whole treatment, or one arm against control. */
+  treatment(exp: Exp, arm?: string): Treatment {
+    const history = exp.history.filter((h) => h.arm === arm);
     return {
-      trafficPct: (t) => exp.stages[this.servingStage(exp, t)]!.percent,
+      trafficPct: (t) => exp.stages[this.servingStage(exp, t, arm)]!.percent,
       windowStart: (t) => {
-        let ws = exp.history[0]!.effectiveAt;
-        for (const h of exp.history) if (h.effectiveAt <= t) ws = h.effectiveAt;
+        let ws = history[0]!.effectiveAt;
+        for (const h of history) if (h.effectiveAt <= t) ws = h.effectiveAt;
         return Math.max(ws, this.pipeline.lastLandingBefore(t));
       },
       harm: (g, t) => {
         let sum = 0;
-        for (const d of this.defects.values()) sum += this.harmOn(d, g, exp, t);
+        for (const d of this.defects.values()) if (d.arm === arm) sum += this.harmOn(d, g, exp, t);
         return sum;
       },
     };
   }
 
-  private activeDefects(exp: Exp, guardrail: string, t: number) {
-    return [...this.defects.values()].filter((d) => this.harmOn(d, guardrail, exp, t) > 0);
+  private activeDefects(exp: Exp, guardrail: string, t: number, arm?: string) {
+    return [...this.defects.values()].filter((d) => d.arm === arm && this.harmOn(d, guardrail, exp, t) > 0);
   }
 
   /** What an issue is really about: matched by signature, or the defect behind the breach it was filed for. */
   private truthFor(i: Issue): string | undefined {
     const bySig = [...this.defects.values()].find((d) => d.signature === i.fields.signature);
     if (bySig) return bySig.id;
-    // Filed for a regression: the defect doing the most harm right now, on any guardrail.
+    // Filed for a regression: the defect doing the most harm right now in its arm, on any guardrail.
     const exp = i.fields.finding.startsWith('regression:') && i.fields.parent.startsWith('exp:') ? this.expFor(i.fields.parent) : undefined;
     if (!exp) return undefined;
+    const arm = armOf(i.fields.finding);
     const harm = (d: Defect) => this.harmOf(d, exp, this.sim.now) / (GUARDRAILS.find((x) => x.name === d.guardrail)?.thresholdPct ?? 1);
-    return [...this.defects.values()].filter((d) => harm(d) > 0).sort((a, b) => harm(b) - harm(a))[0]?.id;
+    return [...this.defects.values()].filter((d) => d.arm === arm && harm(d) > 0).sort((a, b) => harm(b) - harm(a))[0]?.id;
   }
 
   // ───────────────────────────── people ─────────────────────────────
@@ -244,7 +254,7 @@ export class RealisticWorld {
     const resolve = (resolution: string) => Object.assign(p, { status: 'resolved', resolvedAt: this.sim.now, resolution });
     this.sim.timer(this.people.lognormal(15 * MIN, 0.6) + this.people.lognormal(3 * HOUR, 0.6), () => {
       // They read the last day of dashboards, so a defect hidden since by the safety rollback still shows.
-      const truth = [...this.defects.values()].find((d) => d.guardrail && this.cureFraction(d, this.sim.now) < 1 &&
+      const truth = [...this.defects.values()].find((d) => d.guardrail && d.arm === armOf(p.finding) && this.cureFraction(d, this.sim.now) < 1 &&
         Array.from({ length: 25 }, (_, h) => this.sim.now - h * HOUR).some((t) => t >= 0 && this.harmOf(d, exp, t) > 0));
       if (!truth) return resolve('looked into it: metric noise, nothing to fix; resuming');
       const chain: Defect[] = [];
@@ -311,22 +321,30 @@ export class RealisticWorld {
       },
       async readGuardrails(id) {
         await w.rpc('analysis.readout');
-        const r = w.metrics.readout(w.treatment(exp(id)), sim.now);
-        if (r.stale) w.stats.staleReadouts++;
-        return r.readings;
+        const e = exp(id);
+        if (!e.arms) {
+          const r = w.metrics.readout(w.treatment(e), sim.now);
+          if (r.stale) w.stats.staleReadouts++;
+          return r.readings;
+        }
+        // A multi-arm experiment reports each arm against control.
+        const rs = e.arms.map((a) => ({ arm: a.name, r: w.metrics.readout(w.treatment(e, a.name), sim.now, a.name) }));
+        if (rs[0]!.r.stale) w.stats.staleReadouts++;
+        return rs.flatMap(({ arm, r }) => r.readings.map((x) => ({ ...x, arm })));
       },
       async triage(id, failing, episode) {
         await sim.sleep(w.agents.lognormal(4 * MIN, 0.5));
         return w.triage(exp(id), failing, episode);
       },
-      async setStage(id, stage, key) {
+      async setStage(id, stage, key, arm) {
         await w.rpc('experiments.update');
         const e = exp(id);
         if (e.keys.has(key)) return;
         e.keys.add(key);
-        e.peakStage = Math.max(e.peakStage, stage);
-        Object.assign(e, { stage, stageEnteredAt: sim.now });
-        e.history.push({ at: sim.now, effectiveAt: sim.now + w.infra.lognormal(12 * MIN, 0.5), stage, key });
+        const target = arm ? e.arms!.find((a) => a.name === arm)! : e;
+        target.peakStage = Math.max(target.peakStage, stage);
+        Object.assign(target, { stage, stageEnteredAt: sim.now });
+        e.history.push({ at: sim.now, effectiveAt: sim.now + w.infra.lognormal(12 * MIN, 0.5), stage, key, arm });
       },
       async conclude(id) { await w.rpc('experiments.update'); exp(id).status = 'complete'; },
       async escalate(flag, reason) { await w.rpc('pager.page'); w.expFor(`exp:${flag}`)?.escalations.push(reason); },
@@ -405,7 +423,7 @@ export class RealisticWorld {
   private triage(exp: Exp, failing: GuardrailReading[], _attempt: number): Triage {
     // It debugs the regression as a whole, starting from the most significant metric.
     const r = [...failing].sort((a, b) => b.value / b.threshold - a.value / a.threshold)[0]!;
-    const truth = failing.map((x) => this.activeDefects(exp, x.guardrail, this.sim.now)[0]).find(Boolean);
+    const truth = failing.map((x) => this.activeDefects(exp, x.guardrail, this.sim.now, x.arm)[0]).find(Boolean);
     let route: Triage['route'];
     let ref = `noop:${r.guardrail}`;
     if (!truth) {
@@ -478,7 +496,7 @@ export class RealisticWorld {
   snapshot(expId = 'E1') {
     const exp = this.exps.get(expId)!;
     return {
-      stages: exp.history.map((h) => ({ at: h.at, effectiveAt: h.effectiveAt, percent: exp.stages[h.stage]!.percent, key: h.key })),
+      stages: exp.history.map((h) => ({ at: h.at, effectiveAt: h.effectiveAt, percent: exp.stages[h.stage]!.percent, key: h.key, arm: h.arm })),
       bugs: [...this.tracker.issues.values()].map((i) => ({
         id: i.id, title: i.title, parent: i.fields.parent, depth: i.fields.depth, createdAt: i.createdAt, closedAt: i.closedAt,
         status: i.status as string, duplicateOf: i.duplicateOf, notes: i.comments.map((m) => `${m.author}: ${m.text}`),

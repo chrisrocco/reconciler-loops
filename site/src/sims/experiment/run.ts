@@ -1,11 +1,11 @@
 /**
  * Runs one scenario on the virtual-time simulator and records everything the UI plays
  * back: every tick of every loop, workflow runs, the systems of record, and readings.
- * `world` picks the idealized fakes (ProdWorld) or the seeded realistic world.
+ * The world is the seeded realistic one: the same scenario and seed always replay the same way.
  */
 import { DEFAULT_RETRY, Sim } from '../../../../src/runtime/sim';
 import { Terminated } from '../../../../src/core/runtime';
-import { ProdWorld, RAMP_POLICIES } from '../../../../src/fakes/prod-world';
+import { RAMP_POLICIES } from '../../../../src/fakes/prod-world';
 import { RealisticWorld, type WorldStats } from '../../../../src/fakes/realistic/world';
 import { experimentWorkflow, type ExperimentActivities, type GuardrailReading } from '../../../../src/scenarios/experiment';
 import { investigationWorkflow, type InvestigationActivities } from '../../../../src/scenarios/investigation';
@@ -15,7 +15,6 @@ import type { Scenario } from '../../../../src/fakes/catalog';
 
 export const EXP = 'experiment:checkout_v2';
 
-export type WorldKind = 'ideal' | 'realistic';
 import type { Lane, LogEvent, Tick, WorkflowRun } from '../trace';
 export type { EventKind, Lane, LogEvent, Tick, WorkflowRun } from '../trace';
 export interface BugRow {
@@ -32,7 +31,6 @@ export interface Reading { at: number; readings: GuardrailReading[] }
 
 export interface SimRun {
   scenario: Scenario;
-  world: WorldKind;
   seed: number;
   end: number;
   result: { status: string; reason?: string } | undefined;
@@ -46,18 +44,15 @@ export interface SimRun {
   escalations: string[];
   pages: PageView[];
   outages: { from: number; to: number }[];
-  stats?: WorldStats;
+  stats: WorldStats;
   events: LogEvent[];
   error?: string;
 }
 
-export async function runScenario(scenario: Scenario, kind: WorldKind = 'ideal', seed = 1, rampPolicy = scenario.rampPolicy ?? 'standard'): Promise<SimRun> {
+export async function runScenario(scenario: Scenario, seed = 1, rampPolicy = scenario.rampPolicy ?? 'standard'): Promise<SimRun> {
   const sim = new Sim();
-  // The realistic world models a single treatment, so multi-arm experiments run in the idealized one.
-  if (scenario.arms) kind = 'ideal';
-  const world = kind === 'realistic' ? new RealisticWorld(sim, seed) : new ProdWorld(sim);
-  if (world instanceof ProdWorld) world.addExperiment('E1', RAMP_POLICIES[rampPolicy]!, { arms: scenario.arms });
-  else world.addExperiment('E1', RAMP_POLICIES[rampPolicy]!);
+  const world = new RealisticWorld(sim, seed);
+  world.addExperiment('E1', RAMP_POLICIES[rampPolicy]!, { arms: scenario.arms });
   scenario.defects.forEach((d) => world.addDefect(d));
 
   const runs = new Map<string, WorkflowRun[]>();
@@ -74,7 +69,6 @@ export async function runScenario(scenario: Scenario, kind: WorldKind = 'ideal',
     };
     return acts;
   };
-  const retry = kind === 'realistic' ? DEFAULT_RETRY : undefined;
   const onTick = (wf: string) => (r: TickRecord) => {
     const list = ticks.get(wf) ?? [];
     ticks.set(wf, list);
@@ -97,9 +91,9 @@ export async function runScenario(scenario: Scenario, kind: WorldKind = 'ideal',
   };
 
   sim.register('experiment', tracked((rt, input) =>
-    experimentWorkflow(rt, rt.activities(activities(), retry), input, { onTick: onTick(rt.workflowId), maxTicksPerRun: scenario.maxTicksPerRun })));
+    experimentWorkflow(rt, rt.activities(activities(), DEFAULT_RETRY), input, { onTick: onTick(rt.workflowId), maxTicksPerRun: scenario.maxTicksPerRun })));
   sim.register('investigation', tracked((rt, input) =>
-    investigationWorkflow(rt, rt.activities(activities(), retry), input, { onTick: onTick(rt.workflowId) })));
+    investigationWorkflow(rt, rt.activities(activities(), DEFAULT_RETRY), input, { onTick: onTick(rt.workflowId) })));
 
   const start = () => { sim.start(EXP, 'experiment', { flagName: 'checkout_v2', maxInvestigationDepth: scenario.maxDepth ?? 3, maxDurationMs: scenario.maxDurationMs }); };
   scenario.setup?.({ sim, world, start });
@@ -108,7 +102,7 @@ export async function runScenario(scenario: Scenario, kind: WorldKind = 'ideal',
   let error: string | undefined;
   try { await sim.run(); } catch (e) { error = String(e); }
 
-  const snap = world instanceof RealisticWorld ? realisticSnapshot(world) : idealSnapshot(world);
+  const snap = snapshot(world);
   const depthOf = (wf: string) => (wf === EXP ? 0 : snap.bugs.find((b) => `investigate:${b.id}` === wf)?.depth ?? 1);
   const lanes: Lane[] = [...runs.keys()]
     .map((wf) => ({ wf, depth: depthOf(wf), runs: runs.get(wf)!, ticks: ticks.get(wf) ?? [] }))
@@ -117,30 +111,12 @@ export async function runScenario(scenario: Scenario, kind: WorldKind = 'ideal',
   const outages = snap.outages.filter((o) => o.from < end);
 
   return {
-    ...snap, scenario, world: kind, seed, rampPolicy, end, result: sim.result(EXP), lanes, readings, outages, error,
+    ...snap, scenario, seed, rampPolicy, end, result: sim.result(EXP), lanes, readings, outages, error,
     events: buildEvents(lanes, snap.stages, snap.bugs, snap.fixes, snap.escalations, snap.pages, outages, end),
   };
 }
 
-function idealSnapshot(w: ProdWorld) {
-  const exp = w.exps.get('E1')!;
-  return {
-    stages: exp.history.map((h) => ({ at: h.at, percent: exp.stages[h.stage]!.percent, key: h.key, arm: h.arm })),
-    bugs: [...w.bugs.values()].map((b): BugRow => ({
-      id: b.id, title: b.title, parent: b.parent, depth: b.depth, createdAt: b.createdAt, closedAt: b.closedAt, status: b.status,
-      closedBy: b.notes.some((n) => n.includes('human')) ? 'human' : undefined, notes: b.notes,
-    })),
-    fixes: [...w.cls.values()].map((c): FixRow => ({
-      id: c.id, parent: c.parent, finding: c.finding, ref: c.ref, submittedAt: c.submittedAt, inProdAt: c.submittedAt + w.deployLatencyMs,
-    })),
-    escalations: exp.escalations,
-    pages: [...w.pages.values()].map((p) => ({ ...p })),
-    outages: [] as { from: number; to: number }[],
-    stats: undefined,
-  };
-}
-
-function realisticSnapshot(w: RealisticWorld) {
+function snapshot(w: RealisticWorld) {
   const s = w.snapshot('E1');
   const closedBy = (id: string) => w.tracker.issues.get(id)?.closedBy;
   return { ...s, bugs: s.bugs.map((b): BugRow => ({ ...b, closedBy: closedBy(b.id) })) };

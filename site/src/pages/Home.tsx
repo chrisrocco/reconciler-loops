@@ -56,7 +56,7 @@ export function Home() {
         <h2>Five loops, one pattern</h2>
         <div className="sim-grid compact">
           {SIMS.map((s) => (
-            <a key={s.id} className="sim-card" href={href({ page: 'simulate', sim: s.id })}>
+            <a key={s.id} className="sim-card" href={href({ page: 'case-study', sim: s.id })}>
               <div className="sim-card-top"><span className="sim-card-title">{s.title}</span><span className="runs-for">{s.runsFor}</span></div>
               <p>{s.blurb}</p>
             </a>

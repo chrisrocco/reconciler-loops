@@ -5,12 +5,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { realisticScenarios } from '../src/fakes/catalog.js';
+import { SCENARIOS } from '../src/fakes/catalog.js';
 import { EXP, runRealistic, type RealisticRun } from '../src/fakes/realistic/harness.js';
 import { OPEN } from '../src/fakes/realistic/bug-tracker.js';
 
 const SEEDS = 20;
 const TERMINAL = new Set(['done', 'out-of-time', 'escalated', 'failed']);
+
+const armOf = (finding: string) => { const p = finding.split(':'); return p[0] === 'regression' && p.length === 3 ? p[1] : undefined; };
 
 function checkInvariants(r: RealisticRun, label: string) {
   assert.equal(r.error, undefined, `${label}: simulation error`);
@@ -22,10 +24,13 @@ function checkInvariants(r: RealisticRun, label: string) {
     assert.ok(!t.acted.some((k) => k.startsWith('advance') || k === 'conclude'), `${label}: advanced while held at tick ${t.tick}`);
 
   // Ground truth, not just what the loop saw: no advance while one of its bugs was really open.
+  // In a multi-arm experiment an arm's bugs and pages hold only that arm.
   const exp = r.world.exps.get('E1')!;
   const issues = [...r.world.tracker.issues.values()].filter((i) => i.fields.parent === 'exp:checkout_v2');
-  for (const h of exp.history.filter((h) => h.key.includes('/advance') || h.key.includes('conclude')))
-    for (const i of issues) {
+  const advances = exp.history.filter((h) => h.key.includes('/advance') || h.key.includes('conclude'));
+  const holds = (h: (typeof advances)[number], finding: string) => !h.arm || armOf(finding) === undefined || armOf(finding) === h.arm;
+  for (const h of advances)
+    for (const i of issues.filter((i) => holds(h, i.fields.finding))) {
       const closedAt = r.world.tracker.canonical(i.id).closedAt ?? Infinity;
       assert.ok(!(h.at >= i.createdAt && h.at < closedAt), `${label}: ${h.key} while ${i.id} was open`);
     }
@@ -37,8 +42,8 @@ function checkInvariants(r: RealisticRun, label: string) {
   }
 
   // No advance while a page was open.
-  for (const h of exp.history.filter((h) => h.key.includes('/advance') || h.key.includes('conclude')))
-    for (const p of r.world.pages.values())
+  for (const h of advances)
+    for (const p of [...r.world.pages.values()].filter((p) => holds(h, p.finding)))
       assert.ok(!(h.at >= p.openedAt && h.at < (p.resolvedAt ?? Infinity)), `${label}: ${h.key} while page ${p.id} was open`);
 
   // Every investigation this run started has finished.
@@ -48,14 +53,14 @@ function checkInvariants(r: RealisticRun, label: string) {
   }
 }
 
-for (const sc of realisticScenarios()) {
+for (const sc of SCENARIOS) {
   test(`realistic sweep: ${sc.title} (${SEEDS} seeds) keeps every invariant`, async () => {
     for (let seed = 1; seed <= SEEDS; seed++) checkInvariants(await runRealistic(sc, seed), `${sc.id} seed ${seed}`);
   });
 }
 
 test('realistic runs are reproducible from the seed', async () => {
-  const a = await runRealistic(realisticScenarios()[0]!, 7), b = await runRealistic(realisticScenarios()[0]!, 7);
+  const a = await runRealistic(SCENARIOS[0]!, 7), b = await runRealistic(SCENARIOS[0]!, 7);
   assert.equal(a.sim.now, b.sim.now);
   assert.deepEqual(a.world.stats, b.world.stats);
   assert.deepEqual(a.trace.map((t) => t.acted), b.trace.map((t) => t.acted));
@@ -63,7 +68,7 @@ test('realistic runs are reproducible from the seed', async () => {
 
 test('the realistic world actually exercises its imperfections', async () => {
   const totals: Record<string, number> = {};
-  for (const sc of realisticScenarios())
+  for (const sc of SCENARIOS)
     for (let seed = 1; seed <= SEEDS; seed++)
       for (const [k, v] of Object.entries((await runRealistic(sc, seed)).world.stats)) totals[k] = (totals[k] ?? 0) + v;
   for (const k of ['rpcErrors', 'ambiguousCreates', 'statusLag', 'staleReadouts', 'falseAlarms', 'misroutes', 'rcaInconclusive',

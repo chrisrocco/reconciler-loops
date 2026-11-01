@@ -24,7 +24,7 @@ export interface Scenario {
   rampPolicy?: string;
   /** The experiment's time budget, when it needs longer than the default 60 days. */
   maxDurationMs?: number;
-  /** Treatment arms of a multi-arm experiment. The idealized world only. */
+  /** Treatment arms of a multi-arm experiment. */
   arms?: string[];
   /** Install world hooks: humans acting out-of-band, crashes, restarts. */
   setup?: (ctx: ScenarioCtx) => void;
@@ -32,9 +32,6 @@ export interface Scenario {
 
 const EU_REVENUE = { id: 'D2', signature: 'revenue drop for EU cohort', guardrail: 'revenue_per_user', triggerStage: 2, route: 'investigate' } as const;
 const STALE_FX = { id: 'D3', signature: 'stale FX rates in pricing-svc', route: 'investigate' } as const;
-
-/** Scenarios the realistic world can run (it models a single treatment arm). */
-export const realisticScenarios = () => SCENARIOS.filter((s) => !s.arms);
 
 export const SCENARIOS: Scenario[] = [
   {

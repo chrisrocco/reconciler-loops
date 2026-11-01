@@ -71,7 +71,8 @@ export class MetricsPipeline {
   /** Latest event time whose data has been processed. */
   dataUntil(now: number) { return (this.outageAt(now)?.from ?? now) - FRESHNESS_LAG_MS; }
 
-  readout(tr: Treatment, now: number): Readout {
+  /** The guardrails for one treatment; `arm` gives each arm of a multi-arm experiment its own noise. */
+  readout(tr: Treatment, now: number, arm = ''): Readout {
     const dataUntil = this.dataUntil(now);
     const stale = now - dataUntil > STALE_AFTER_MS;
     const ws = tr.windowStart(dataUntil);
@@ -83,7 +84,7 @@ export class MetricsPipeline {
       const jobFailed = rngFor(this.seed, 'metric-job', g.name, Math.floor(now / HOUR)).chance(0.01);
       if (stale || jobFailed || buckets * HOUR < MIN_DATA_MS || traffic <= 0) return { ...base, verdict: 'insufficient', value: 0 };
 
-      const eps = this.bucketNoise(g, ws, traffic, buckets);
+      const eps = this.bucketNoise(g, ws, traffic, buckets, arm);
       let sum = 0;
       for (let j = 0; j < buckets; j++) sum += tr.harm(g.name, ws + (j + 0.5) * HOUR) + eps[j]!;
       const harm = sum / buckets;
@@ -101,8 +102,8 @@ export class MetricsPipeline {
   }
 
   /** Hourly bucket noise for one analysis window, generated once and extended as data arrives. */
-  private bucketNoise(g: GuardrailSpec, ws: number, traffic: number, n: number) {
-    const key = `${g.name}@${ws}@${traffic}`;
+  private bucketNoise(g: GuardrailSpec, ws: number, traffic: number, n: number, arm: string) {
+    const key = `${arm ? `${arm}:` : ''}${g.name}@${ws}@${traffic}`;
     let s = this.noise.get(key);
     if (!s) this.noise.set(key, (s = { rng: rngFor(this.seed, 'noise', key), eps: [] }));
     while (s.eps.length < n) s.eps.push(s.rng.normal(0, g.noisePct / Math.sqrt(traffic)));

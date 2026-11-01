@@ -4,7 +4,7 @@ import { DAY, HOUR } from '../../../../src/core/time';
 import { SCENARIOS } from '../../../../src/fakes/catalog';
 import { RAMP_POLICIES, RAMP_POLICY_NAMES } from '../../../../src/fakes/prod-world';
 import { href } from '../../router';
-import { EXP, runScenario, type SimRun, type Tick, type WorldKind } from './run';
+import { EXP, runScenario, type SimRun, type Tick } from './run';
 import { usePlayback } from '../../hooks';
 import { Timeline } from './Timeline';
 import { FrameInspector } from '../../components/FrameInspector';
@@ -14,7 +14,6 @@ import { Friction } from './Friction';
 /** The experiment ramp, with every catalog scenario as a variant and any ramp policy. */
 export function ExperimentSim({ variant }: { variant?: string }) {
   const scenarioId = SCENARIOS.find((s) => s.id === variant)?.id ?? SCENARIOS[0]!.id;
-  const [world, setWorld] = useState<WorldKind>('realistic');
   const [policyFor, setPolicy] = useState<{ id: string; policy: string }>();
   const rampPolicy = policyFor?.id === scenarioId ? policyFor.policy : SCENARIOS.find((s) => s.id === scenarioId)!.rampPolicy ?? 'standard';
   const [seed, setSeed] = useState(1);
@@ -27,7 +26,7 @@ export function ExperimentSim({ variant }: { variant?: string }) {
   useEffect(() => {
     let live = true;
     const scenario = SCENARIOS.find((s) => s.id === scenarioId)!;
-    runScenario(scenario, world, seed, rampPolicy).then((r) => {
+    runScenario(scenario, seed, rampPolicy).then((r) => {
       if (!live) return;
       setRun(r);
       setT(incidentWindow(r)?.[1] ?? r.end);
@@ -35,10 +34,8 @@ export function ExperimentSim({ variant }: { variant?: string }) {
       setPinned(undefined);
     });
     return () => { live = false; };
-  }, [scenarioId, world, seed, rampPolicy]);
-  const multiArm = !!SCENARIOS.find((s) => s.id === scenarioId)!.arms;
-  const shownWorld: WorldKind = multiArm ? 'ideal' : world;
-  const current = run && run.scenario.id === scenarioId && (run.world === world || multiArm) && run.seed === seed && run.rampPolicy === rampPolicy;
+  }, [scenarioId, seed, rampPolicy]);
+  const current = run && run.scenario.id === scenarioId && run.seed === seed && run.rampPolicy === rampPolicy;
 
   const [zoom, setZoom] = useState<'incident' | 'all'>('incident');
   const incident = useMemo(() => (run ? incidentWindow(run) : undefined), [run]);
@@ -83,6 +80,7 @@ export function ExperimentSim({ variant }: { variant?: string }) {
           <a className="back" href={href({ page: 'simulate' })}>← All simulations</a>
           <div className="brand-title">Experiment ramp</div>
           <div className="brand-sub">An agent ramps an experiment through traffic stages, watching guardrails, investigating regressions with child loops. Each scenario runs the real <span className="mono">src/</span> code in your browser.</div>
+          <a className="case-link" href={href({ page: 'case-study', sim: 'experiment' })}>Read the case study →</a>
         </div>
         <div className="world-picker">
           <label className="field">Ramp policy
@@ -90,23 +88,12 @@ export function ExperimentSim({ variant }: { variant?: string }) {
               {RAMP_POLICY_NAMES.map((p) => <option key={p} value={p}>{p}: {RAMP_POLICIES[p]!.map((s) => `${s.percent}%`).join(' → ')}</option>)}
             </select>
           </label>
-          {multiArm && <p className="world-blurb">Multi-arm experiments run in the idealized world, which models one stage per arm.</p>}
-          <div className="segmented full" role="group" aria-label="World">
-            <button className={shownWorld === 'realistic' ? 'on' : ''} disabled={multiArm} onClick={() => setWorld('realistic')}>Realistic world</button>
-            <button className={shownWorld === 'ideal' ? 'on' : ''} onClick={() => setWorld('ideal')}>Idealized fakes</button>
+          <p className="world-blurb">Noisy metrics with CIs, lagging search, flaky RPCs, wrong agents, human review in working hours, daily release cuts and weekday rollouts.</p>
+          <div className="seed">
+            <label htmlFor="seed">Seed</label>
+            <input id="seed" type="number" min={1} value={seed} onChange={(e) => setSeed(Math.max(1, Number(e.target.value) || 1))} />
+            <button onClick={() => setSeed(seed + 1)} title="Same scenario, a different draw of the world">Next seed</button>
           </div>
-          <p className="world-blurb">
-            {shownWorld === 'realistic'
-              ? 'Noisy metrics with CIs, lagging search, flaky RPCs, wrong agents, human review in working hours, daily release cuts and weekday rollouts.'
-              : 'Perfect systems: exact metrics, instant consistency, an 8h deploy, agents that are always right. Matches the unit tests.'}
-          </p>
-          {shownWorld === 'realistic' && (
-            <div className="seed">
-              <label htmlFor="seed">Seed</label>
-              <input id="seed" type="number" min={1} value={seed} onChange={(e) => setSeed(Math.max(1, Number(e.target.value) || 1))} />
-              <button onClick={() => setSeed(seed + 1)} title="Same scenario, a different draw of the world">Next seed</button>
-            </div>
-          )}
         </div>
         <nav className="scenarios">
           {SCENARIOS.map((s) => (
@@ -153,16 +140,14 @@ export function ExperimentSim({ variant }: { variant?: string }) {
                 selectedLane={lane?.wf ?? EXP} selectedTick={tick}
                 onSelectTick={selectTick} onSelectLane={(wf) => { setLaneId(wf); setPinned(undefined); }}
               />
-              <Legend realistic={run.world === 'realistic'} />
+              <Legend />
               {run.error && <div className="error">Simulation error: {run.error}</div>}
             </section>
 
-            {run.stats && (
-              <section className="panel">
-                <h2>Real-world friction in this run (seed {run.seed})</h2>
-                <Friction stats={run.stats} />
-              </section>
-            )}
+            <section className="panel">
+              <h2>Real-world friction in this run (seed {run.seed})</h2>
+              <Friction stats={run.stats} />
+            </section>
 
             <div className="bottom">
               <section className="panel">
@@ -224,7 +209,7 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   return <div className="stat"><div className="stat-value mono">{value}</div><div className="stat-label">{label}</div></div>;
 }
 
-function Legend({ realistic }: { realistic: boolean }) {
+function Legend() {
   return (
     <div className="legend">
       <span><i className="lg dot idle" /> idle poll</span>
@@ -232,15 +217,11 @@ function Legend({ realistic }: { realistic: boolean }) {
       <span><i className="lg dot signal" /> woken early by a hint</span>
       <span><i className="lg band held" /> held by a loop-scoped blocker</span>
       <span><i className="lg band claimed" /> finding claimed by an in-flight intent</span>
-      {realistic ? (
-        <>
-          <span><i className="lg band review" /> fix CL in presubmit / review</span>
-          <span><i className="lg band waiting" /> waiting for the release cut / qualifying</span>
-          <span><i className="lg band hatch" /> rolling out (canary → waves)</span>
-          <span><i className="lg band weekend" /> weekend</span>
-          <span><i className="lg band stalled" /> metrics pipeline stalled</span>
-        </>
-      ) : <span><i className="lg band hatch" /> fix CL rolling out</span>}
+      <span><i className="lg band review" /> fix CL in presubmit / review</span>
+      <span><i className="lg band waiting" /> waiting for the release cut / qualifying</span>
+      <span><i className="lg band hatch" /> rolling out (canary → waves)</span>
+      <span><i className="lg band weekend" /> weekend</span>
+      <span><i className="lg band stalled" /> metrics pipeline stalled</span>
       <span className="muted">Click a dot to inspect that tick · drag to scrub · space plays · ← → step ticks</span>
     </div>
   );

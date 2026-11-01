@@ -4,17 +4,20 @@ import { useEffect, useState } from 'react';
 export type Route =
   | { page: 'home' }
   | { page: 'learn'; lesson?: string }
-  | { page: 'simulate'; sim?: string; variant?: string };
+  | { page: 'simulate'; sim?: string; variant?: string }
+  | { page: 'case-study'; sim: string };
 
 export function parse(hash: string): Route {
   const [page, a, b] = hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
   if (page === 'learn') return { page: 'learn', lesson: a || undefined };
   if (page === 'simulate') return { page: 'simulate', sim: a || undefined, variant: b || undefined };
+  if (page === 'case-study' && a) return { page: 'case-study', sim: a };
   return { page: 'home' };
 }
 
 export function href(r: Route): string {
   if (r.page === 'learn') return `#/learn${r.lesson ? `/${r.lesson}` : ''}`;
+  if (r.page === 'case-study') return `#/case-study/${r.sim}`;
   if (r.page === 'simulate') return `#/simulate${r.sim ? `/${r.sim}${r.variant ? `/${encodeURIComponent(r.variant)}` : ''}` : ''}`;
   return '#/';
 }

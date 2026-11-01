@@ -81,7 +81,7 @@ export function Timeline({ run, from, to, t, onSeek, selectedLane, selectedTick,
             </clipPath>
           </defs>
 
-          {run.world === 'realistic' && <Weekends from={from} to={to} x={x} height={height} />}
+          <Weekends from={from} to={to} x={x} height={height} />
           <Axis from={from} to={to} x={x} plotW={plotW} height={height} />
 
           {/* ── Rollout ── */}
