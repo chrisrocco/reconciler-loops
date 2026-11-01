@@ -425,36 +425,58 @@ In code, `observe` reads answers from the decision component (`Decisions`), so `
 
 ## A second example: code review
 
-This loop helps the author of a code change (a CL) through human review. It reads each reviewer comment, decides how to respond, and submits the CL when review is done. It runs for days rather than weeks, and it differs from the experiment loop in useful ways.
+This loop drives a code change (a CL) through review to submitted, acting for the CL's owner. The agent posts as itself, on the owner's behalf. It runs for days rather than weeks, and it differs from the experiment loop in useful ways.
 
-**Goal:** the CL is submitted.
+One rule shapes the whole loop: **every submit requirement that isn't met is a finding, and anything already in progress that will meet it is a blocker.** A clean frame then means every requirement is met, so the only forward step is submit.
 
-**Findings:** each unresolved thread whose latest message is from a reviewer, with the id `thread:<threadId>@<messageId>`. A reviewer's follow-up message gives the thread a new id, because it needs a new answer. Messages from the agent or the CL's owner never create findings.
+**Goal:** the CL is submitted, by the agent or by a person.
 
-**Judgment:** in `assess`, an agent answers two questions about each open finding: what kind of comment is this, and do we agree with it? The answer is stored under `classify:<findingId>`, with no attempt number. A message's text never changes, so one judgment per message is enough. A regression in the experiment loop is judged again on each attempt, because a failed fix has changed the situation; a comment has not changed.
+**World:** the CL as the review system shows it: its patchsets, reviewers, the attention set (whose turn it is), comment threads, check results, whether it merges cleanly with the target branch, and the submit requirements. The loop reads the requirements from the review system (a review approval, an owner of each directory, approval for each language) instead of working out ownership itself, so porting it to another review system means mapping fields, not logic.
+
+**Findings:**
+
+| Finding | Id | Why that id |
+| --- | --- | --- |
+| A thread whose latest message is from a reviewer, a person or an analyzer | `thread:<thread>@<message>` | A follow-up needs a new answer, so the latest message is part of the id |
+| An approval submit still needs | `owners:search/`, `language:go`, `review` | The requirement itself, until it is granted |
+| A required check that is failing or still running | `check:<name>` | No patchset in it, so a check that keeps failing across fix attempts uses up one set of attempts and is escalated |
+| The CL doesn't merge with the target branch | `conflict` | The rebase key carries the target branch's head, so each rebase is a new action |
+
+**Blockers:** none of them holds the loop.
+
+| Blocker | Covers |
+| --- | --- |
+| A draft reply waiting for the owner | Its thread |
+| A question the agent put to the owner | The finding it is about |
+| A reviewer on the CL who can grant an approval and isn't away | That approval. It ages only while it's the reviewer's turn |
+| A check that is still running | That check |
+
+The reviewer blocker is what tells waiting apart from repair. If someone assigned can grant `owners:web/`, the finding is blocked and the loop waits. If nobody can, because no owner is on the CL or the only one is out of office, the finding is open and the loop adds a reviewer. A reviewer who never responds ages the finding past its limit, two days in this loop, and the finding is escalated.
+
+**Judgment:** in `assess`, an agent decides what kind of comment each open thread is. The answer is stored under `judge:<finding id>`, with no attempt number. A message's text never changes, so one judgment per message is enough. A regression in the experiment loop is judged again on each attempt, because a failed fix has changed the situation; a comment has not changed.
 
 The agent describes the comment, and the code decides the response. Keeping these apart means the policy can be read, tested and changed without touching the prompt.
 
-**Policy:** `plan` maps each judgment to a response with a table:
+**Policy:** `plan` maps each kind of comment to a response with a table that a team can tune:
 
-| Comment kind | Agree? | Response |
-| --- | --- | --- |
-| Nit | Yes | Fix in code |
-| Bug | Yes | Fix in code |
-| Alternative suggestion | Yes | Fix in code |
-| Alternative suggestion | No | Push back: draft a reply explaining why, for the owner to approve |
-| Question | — | Draft an answer, for the owner to approve |
-| Design concern | — | Ask the owner |
+| Comment kind | Response |
+| --- | --- |
+| A nit, a bug, or a suggestion worth taking | Fix in code |
+| A question | Post an answer |
+| A suggestion the agent disagrees with | Push back: draft a reply for the owner to approve |
+| A design or scope decision | Ask the owner |
+| Praise, or a note | Acknowledge it |
+| An analyzer finding that doesn't apply | Reply that it isn't useful here |
 
-"Push back" is not something the agent decides on its own. It is what the policy does with "alternative suggestion, and we disagree", which also makes it easy to require a person's approval for it.
+"Push back" is not something the agent decides on its own. It is what the policy does with a suggestion it disagrees with, which also makes it easy to require a person's approval for it.
 
 **Actions:**
 
-- **Fixes are batched.** One new revision addresses every open comment labeled for a fix, with the key `fix:<finding ids>:<attempt>`. The action is finished when it returns, because the revision exists. It also replies "Done" on each thread it addresses, so those threads' latest message is now the agent's and their findings disappear.
-- **Drafts and questions to the owner show up later.** Each one has a deadline, such as one hour. If a draft never appears, for example because the review tool dropped it, the finding opens again and is retried under the next attempt number.
-- **Submit** with the key `submit:r<revision>`, only on a clean frame with every thread resolved and at least one approval.
-
-**Blockers:** each draft waiting for the owner's approval, and each question waiting for the owner's answer, covers only its own thread. The agent keeps working on the other threads. Neither holds the loop, but because submitting needs a clean frame, nothing is submitted while any of them is open. The owner's approvals go through the shared decision component, so a team can set, for example, "approve answers to questions automatically, but ask me before pushing back."
+- **Code changes are batched.** One new patchset addresses every thread labeled for a fix, every failing check that isn't flaky, and a conflict a plain rebase can't solve. These are independent items handled together, so batching them in `plan` is right. The agent replies "Done" on each thread it addressed.
+- **A flaky check is rerun first.** If the check system flags a failure as likely flaky and it has run only once on this patchset, the loop reruns it instead of changing code.
+- **Missing approvals get a reviewer.** The loop adds the first eligible person who is present and not already on the CL. This action names no findings in its targets: adding someone isn't an attempt at the finding, and it mustn't start the finding's age.
+- **Escalating tags the owner.** It adds them to the attention set with a comment that @-mentions them and names the finding. That question is then the blocker that covers the finding, until the owner answers.
+- **Submit** with the key `submit:ps<patchset>`, on a clean frame.
 
 **No issues.** Nothing here is delegated to an issue loop. Every response is quick and within the agent's own authority, so it acts directly (see "Mitigate locally, delegate durably" in the previous section).
 
@@ -500,11 +522,11 @@ The campaign never sees review comments. It sees one blocker per component until
 |  | Experiment ramp | Code review | Migration |
 | --- | --- | --- | --- |
 | Runs for | Weeks | Days | Months |
-| A finding is | A regression: the guardrails failing together | A reviewer comment awaiting a response | A component still on the old framework |
-| Finding id | `regression:s<highest stage>` | `thread:<thread>@<message>` | `legacy:<component path>` |
+| A finding is | A regression: the guardrails failing together | An unmet submit requirement: a comment awaiting a response, a missing approval, a failing check, a conflict | A component still on the old framework |
+| Finding id | `regression:s<highest stage>` | `thread:<thread>@<message>`, `owners:<path>`, `check:<name>` | `legacy:<component path>` |
 | Agent judgment | Triage, once per attempt | Classification, once per message | Conversion, inside each child loop |
-| Response | Roll back, then file an issue | Fix in code, or draft a reply | Start a child loop for the component |
-| Blockers | Open issues, which hold the whole loop | Drafts and owner questions, each covering its own thread | Migrations in progress and prerequisites, each covering its own component |
+| Response | Roll back, then file an issue | Fix in code, reply, add a reviewer, rerun or rebase | Start a child loop for the component |
+| Blockers | Open issues, which hold the whole loop | Drafts, owner questions, assigned reviewers and running checks, each covering its own finding | Migrations in progress and prerequisites, each covering its own component |
 | Moves forward by | Advancing a stage | Submitting the CL | Running the cleanup once nothing is left |
 
 ## Hand-rolled or library

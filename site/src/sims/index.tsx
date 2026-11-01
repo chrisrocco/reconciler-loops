@@ -24,8 +24,8 @@ export const SIMS: SimInfo[] = [
   },
   {
     id: 'code-review', title: 'Code review', runsFor: 'days', Component: CodeReviewSim,
-    blurb: 'Answer a human reviewer: fix nits and bugs in code, draft replies for the owner to approve, and escalate design questions.',
-    watch: ['Blockers that cover only their own thread', 'Judgments made once per message', 'A lost draft retried, then escalated'],
+    blurb: 'Drive a change to submitted: answer reviewers, add the owners and approvers it needs, keep checks green and the branch mergeable, and submit once every requirement is met.',
+    watch: ['Unmet submit requirements as findings', 'A reviewer who never responds, aged out and swapped', 'Approvals that reset on a new patchset'],
   },
   {
     id: 'review-loop', title: 'Inline review loop', runsFor: 'minutes', Component: ReviewLoopSim,

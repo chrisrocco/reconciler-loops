@@ -119,13 +119,13 @@ agent's suggestion.
 | | Local review | Code review | Live experiment |
 |---|---|---|---|
 | Input | a change | a CL | a flag name: mounts the experiment on it, or creates one |
-| Findings | reviewer comments, per dimension | unanswered human threads | `unmounted`, one regression for all the guardrails failing together |
-| Assess (memoized) | (none; reviews memoized per revision) | classify vs. response policy | debugging-playbook triage per episode |
-| Blockers | none | owner-approval drafts, owner decisions (`finding` scope) | open child bugs, undeployed fix CLs, open pages, unanswered questions (`loop` scope) |
-| Actions | `revise` (all open findings, batched) | `fix` (batched), `reply` (auto/draft), `submit` | `mount`, `create`, `rollback`, `submit-fix`, `file-bug`, `start-investigation`, `advance`, `conclude` |
-| Escalation | stops the inline loop; the caller hands the change over | asks the CL owner | pages on-call and rolls back to stage 0 |
+| Findings | reviewer comments, per dimension | every unmet submit requirement: threads awaiting us, approvals nobody assigned can grant, failing or running checks, a conflict | `unmounted`, one regression for all the guardrails failing together |
+| Assess (memoized) | (none; reviews memoized per revision) | judge each thread once per message, then the response policy | debugging-playbook triage per episode |
+| Blockers | none | drafts and questions with the owner, a present reviewer who can grant an approval, running checks (`finding` scope) | open child bugs, undeployed fix CLs, open pages, unanswered questions (`loop` scope) |
+| Actions | `revise` (all open findings, batched) | `revise` (batched), `reply` (post/draft), `add-reviewer`, `rerun`, `rebase`, `submit` | `mount`, `create`, `rollback`, `submit-fix`, `file-bug`, `start-investigation`, `advance`, `conclude` |
+| Escalation | stops the inline loop; the caller hands the change over | tags the CL owner (attention set + @-mention) | pages on-call and rolls back to stage 0 |
 | Done | no blocking findings | CL submitted | ramped to 100% |
-| Ends early | escalated, or out of rounds (the plan stops) | 21 days | 60 days → safe hold |
+| Ends early | escalated, or out of rounds (the plan stops) | 30 days | 60 days → safe hold |
 
 **The recursive investigation** (`src/scenarios/investigation.ts`) is the same primitive
 again: its findings are what it still lacks (root cause, prerequisite, fix), and its blockers
@@ -148,6 +148,13 @@ own escalations) that names no targets, so it doesn't use up an attempt. The ope
 the loop like any other loop-scoped blocker. Once on-call resolves it, the loop carries on:
 if the regression is gone the ramp resumes, and if it's still there the agent gets fresh
 attempts. Only the 60-day budget ends the ramp, with a safe hold.
+
+**Code review** (`src/scenarios/code-review.ts`). The agent drives a change to submitted,
+posting as itself for the owner. Every unmet submit requirement is a finding and anything
+in progress that will meet it is a blocker, so the only forward step is submit. Requirements
+(review, owners per directory, language) are read from the review system, so porting is a
+matter of mapping fields. A reviewer who can grant an approval covers it while present, and
+ages it only while it's their turn; nobody able to grant it means the loop adds someone.
 
 **Experiment by flag.** The input is `{ flagName }`. Everything the loop files is labeled
 `exp:<flag>`, and the workflow id is `experiment:<flag>`. Until it manages an experiment, the
@@ -209,7 +216,7 @@ d5+10:00 [experiment:checkout_v2]  → advance:1->2@…                     (re-
 d13+10:00 [experiment:checkout_v2] → conclude
 ```
 
-## Tests: `npm test` (54 tests, all virtual time)
+## Tests: `npm test` (59 tests, all virtual time)
 
 Experiment: happy path · quick fix held on deploy · child investigation blocks the parent ·
 recursion to depth 2 · **crash right after filing the bug, then a no-memory restart (no
@@ -231,13 +238,15 @@ Migration: every component moves and the old framework is removed · work-in-pro
 and prerequisites hold at every moment, and only the hard component is escalated.
 On-call: 90 days with no goal or budget, every breakage green within two hours, ignored
 issues escalated, memory bounded · reproducible from the seed.
-Code review: classify → policy → act over 30h with drafts, escalation, follow-ups, batching,
-and checkpoints · the same loop started late on a CL that already has all its comments.
+Code review: the pure findings and blockers · a typical review (owners added past an absent
+reviewer, comments fixed in one patchset, answered, drafted, put to the owner, a flaky check
+rerun, a rebase, submitted with every requirement met) · started late · lost drafts retried,
+then escalated · an unresponsive reviewer aged out and swapped · votes that reset after a
+conflict · a check that won't pass, escalated and fixed by the owner.
 Review loop: converges through a regression introduced by a fix · advisory-only findings
 don't block · a stubborn finding is escalated and stops the inline loop · round limit.
 Core: a lost action re-proposed under a spent key is escalated at once · a plan that acts
-every tick polls instead of spinning · a lost code-review draft is retried under new keys,
-then escalated to the owner · escalation when out of attempts, in flight, and after a
+every tick polls instead of spinning · escalation when out of attempts, in flight, and after a
 person's answer (fresh attempts) · aging, and prerequisites that don't age · retention
 keeps attempt numbers counting · v1 memory migration · an on-call loop with no goal and no
 time budget runs a simulated year in bounded memory.
@@ -298,7 +307,7 @@ src/core/        types.ts · reconcile.ts (the loop, ledger, escalation, retenti
 src/runtime/     sim.ts (virtual-time engine: children, hints, terminate) · temporal.ts (adapter, answer signal, logTick)
 src/scenarios/   review-loop.ts · code-review.ts · experiment.ts · investigation.ts · systems.ts
                  migration.ts (campaign + component) · on-call.ts
-src/fakes/       prod-world.ts (idealized, ramp policies, arms) · review-world.ts · catalog.ts (scenarios)
+src/fakes/       prod-world.ts (idealized, ramp policies, arms) · review-world.ts · review-system.ts (code review) · catalog.ts
                  migration-world.ts (codebase, SAMPLE_APP) · on-call-world.ts (seeded org)
                  realistic/ world.ts · metrics.ts · bug-tracker.ts · release.ts · calendar.ts · rng.ts · harness.ts
 examples/        experiment-timeline.ts · realistic-report.ts · temporal-workflows.ts (real proxyActivities/continueAsNew wiring)

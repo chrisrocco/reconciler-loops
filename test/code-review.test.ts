@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Sim, HOUR, DAY } from '../src/runtime/sim.js';
 import { reconcileToEnd } from '../src/core/reconcile.js';
 import { AGENT, blockersIn, codeReviewLoop, findingsIn, pickReviewer, type ChangeView } from '../src/scenarios/code-review.js';
-import { ReviewSystem, TYPICAL, type ReviewSystemConfig } from '../src/fakes/review-system.js';
+import { LOST_DRAFTS, ReviewSystem, SLOW_REVIEWER, STUCK_CHECK, TYPICAL, VOTES_RESET, type ReviewSystemConfig } from '../src/fakes/review-system.js';
 import type { TickRecord } from '../src/core/types.js';
 
 const WF = 'code-review:change/100';
@@ -94,23 +94,14 @@ test('started late, with every comment already there: the same result, because t
 });
 
 test('a lost draft is retried under a new key, then the thread goes to the owner', async () => {
-  const { acted, done } = run({
-    files: [{ path: 'search/a.go', language: 'go' }], loseDrafts: true,
-    people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice', passes: [[{ body: 'alt: use a channel here' }]] }],
-    reviewers: ['alice'],
-  });
+  const { acted, done } = run(LOST_DRAFTS);
   await done();
   const t = acted().filter((k) => k.includes('thread:t1'));
   assert.deepEqual(t.slice(0, 4), [1, 2, 3].map((n) => `reply:thread:t1@m1:${n}`).concat('escalate:thread:t1@m1:4'));
 });
 
 test('a reviewer who never takes their turn: the requirement ages out, the owner is tagged, and swaps them', async () => {
-  const cfg: ReviewSystemConfig = {
-    ...TYPICAL,
-    people: [...TYPICAL.people.filter((p) => p.user !== 'bob'), { user: 'dave', owns: ['web/'], languages: ['typescript'], unresponsive: true }],
-    reviewers: ['alice', 'dave'],
-  };
-  const { rs, trace, acted, done } = run(cfg);
+  const { rs, trace, acted, done } = run(SLOW_REVIEWER);
   const out = await done();
   assert.equal(out.status, 'done');
   // Blocked by dave for two days, then escalated: the owner removed dave and added carol.
@@ -122,15 +113,7 @@ test('a reviewer who never takes their turn: the requirement ages out, the owner
 });
 
 test('votes that reset on a new patchset: the reviewer approves again before the change is submitted', async () => {
-  const cfg: ReviewSystemConfig = {
-    files: [{ path: 'search/a.go', language: 'go' }], votes: 'reset',
-    people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice', turnaround: 4 * HOUR, passes: [[{ body: 'nit: rename x' }]] }],
-    reviewers: ['alice'],
-    // A slow build: alice approves before it finishes, then the target branch moves with a conflict.
-    checks: [{ name: 'build', durationMs: 6 * HOUR }],
-    headMoves: [{ at: 10 * HOUR, conflicts: true }],
-  };
-  const { rs, acted, done } = run(cfg);
+  const { rs, acted, done } = run(VOTES_RESET);
   const out = await done();
   assert.equal(out.status, 'done');
   // The conflict at head needed a code change, which reset alice's approval; she approved the new patchset.
@@ -141,12 +124,7 @@ test('votes that reset on a new patchset: the reviewer approves again before the
 });
 
 test('a check that keeps failing for real is escalated after three fixes, and the owner fixes it', async () => {
-  const { rs, acted, done } = run({
-    files: [{ path: 'search/a.go', language: 'go' }],
-    people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice' }],
-    reviewers: ['alice'],
-    checks: [{ name: 'integration', fixesNeeded: 99 }],
-  });
+  const { rs, acted, done } = run(STUCK_CHECK);
   const out = await done();
   assert.equal(out.status, 'done');
   assert.deepEqual(acted().filter((k) => k.includes('check:integration')).slice(0, 4),

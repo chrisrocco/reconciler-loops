@@ -279,3 +279,5 @@ a.scenario { color: var(--fg); text-decoration: none; }
   .lesson h1 { font-size: 27px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.req-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+@media (max-width: 640px) { .req-grid { grid-template-columns: minmax(0, 1fr); } }

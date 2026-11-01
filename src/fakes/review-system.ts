@@ -388,3 +388,35 @@ export const TYPICAL: ReviewSystemConfig = {
   headMoves: [{ at: 12 * HOUR }],
 };
 
+
+/** Drafts are accepted but never appear: the agent retries, then hands the thread to the owner. */
+export const LOST_DRAFTS: ReviewSystemConfig = {
+  files: [{ path: 'search/a.go', language: 'go' }], loseDrafts: true,
+  people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice', passes: [[{ body: 'alt: use a channel here' }]] }],
+  reviewers: ['alice'],
+};
+
+/** The assigned web/ owner never takes their turn: the requirement ages out and the owner swaps them. */
+export const SLOW_REVIEWER: ReviewSystemConfig = {
+  ...TYPICAL,
+  people: [...TYPICAL.people.filter((p) => p.user !== 'bob'), { user: 'dave', owns: ['web/'], languages: ['typescript'], unresponsive: true }],
+  reviewers: ['alice', 'dave'],
+};
+
+/** Votes reset on a new patchset; a conflict at head after the approval forces one. */
+export const VOTES_RESET: ReviewSystemConfig = {
+  files: [{ path: 'search/a.go', language: 'go' }], votes: 'reset',
+  people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice', turnaround: 4 * HOUR, passes: [[{ body: 'nit: rename x' }]] }],
+  reviewers: ['alice'],
+  // A slow build: alice approves before it finishes, then the target branch moves with a conflict.
+  checks: [{ name: 'build', durationMs: 6 * HOUR }],
+  headMoves: [{ at: 10 * HOUR, conflicts: true }],
+};
+
+/** A required check fails for real, whatever the agent tries. */
+export const STUCK_CHECK: ReviewSystemConfig = {
+  files: [{ path: 'search/a.go', language: 'go' }],
+  people: [{ user: 'olivia', owns: ['search/'], languages: ['go'] }, { user: 'alice' }],
+  reviewers: ['alice'],
+  checks: [{ name: 'integration', fixesNeeded: 99 }],
+};
