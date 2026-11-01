@@ -1,0 +1,25 @@
+{
+  "name": "reconciler",
+  "version": "1.0.0",
+  "description": "Level-triggered reconciler loops for durable agent workflows",
+  "main": "index.js",
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc -p .",
+    "site": "npm --prefix site run dev",
+    "site:build": "npm --prefix site run build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@temporalio/workflow": "^1.25.0"
+  },
+  "type": "module",
+  "private": true
+}
