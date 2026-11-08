@@ -65,6 +65,9 @@ export function Home() {
             </a>
           ))}
         </div>
+        <a className="home-more" href={href({ page: 'playbook' })}>
+          Building one into a real project? Follow the implementation playbook, from survey to cutover →
+        </a>
       </section>
     </div>
   );

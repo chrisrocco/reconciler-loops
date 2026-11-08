@@ -299,6 +299,7 @@ a.scenario { color: var(--fg); text-decoration: none; }
 .source .code-block { border-radius: 0 0 8px 8px; margin: 0; max-height: 640px; }
 .source-caption { font-size: 13px; color: var(--muted); margin-top: 6px; }
 .code-block code { display: block; font-variant-ligatures: none; }
+.code-block .plain { white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-block .ln { display: block; white-space: pre-wrap; overflow-wrap: anywhere; padding-left: var(--hang); text-indent: calc(-1 * var(--hang)); }
 .tk-com { color: var(--faint); font-style: italic; }
 .tk-str { color: var(--act); }

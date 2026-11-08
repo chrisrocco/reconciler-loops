@@ -9,7 +9,8 @@ Kubernetes controller, run on a durable-execution engine. The developer guide,
 this README is the map of the code. The site in `site/` teaches the pattern with an
 interactive tutorial and runs every loop as a live simulation. Each loop has a plain-English
 case study in [docs/case-studies/](docs/case-studies/): the job, what makes it hard, and what
-the pattern gives it.
+the pattern gives it. To build a loop into a real project, follow the implementation playbook in
+[docs/playbook/](docs/playbook/), which a coding agent can also use as a skill.
 
 ```
             ┌──────────────────────────────── tick ─────────────────────────────────┐

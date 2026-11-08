@@ -3,6 +3,7 @@ import { Home } from './pages/Home';
 import { Learn } from './pages/Learn';
 import { Simulate } from './pages/Simulate';
 import { CaseStudy } from './pages/CaseStudy';
+import { Playbook } from './pages/Playbook';
 
 export function App() {
   const route = useRoute();
@@ -15,12 +16,14 @@ export function App() {
         <div className="site-links">
           <a className={route.page === 'learn' ? 'on' : ''} href={href({ page: 'learn' })}>Learn</a>
           <a className={route.page === 'simulate' || route.page === 'case-study' ? 'on' : ''} href={href({ page: 'simulate' })}>Simulate</a>
+          <a className={route.page === 'playbook' ? 'on' : ''} href={href({ page: 'playbook' })}>Playbook</a>
         </div>
       </nav>
       {route.page === 'home' && <Home />}
       {route.page === 'learn' && <Learn lessonId={route.lesson} />}
       {route.page === 'simulate' && <Simulate simId={route.sim} variant={route.variant} />}
       {route.page === 'case-study' && <CaseStudy simId={route.sim} />}
+      {route.page === 'playbook' && <Playbook docId={route.doc} />}
     </>
   );
 }
